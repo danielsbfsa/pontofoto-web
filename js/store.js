@@ -36,7 +36,10 @@ export function emptyData() {
     punches: [],      // {id, dateTime, type, source, note, employeeName, companyName, nsr, ocrBox, photoId}
     adjustments: [],  // {id, referenceDate, minutesDelta, reason}
     marks: {},        // date -> {date, type, note, doubled}
-    settings: { ...DEFAULT_CONFIG, name: '', company: '', checkpoint: null, goal: null },
+    settings: { ...DEFAULT_CONFIG, name: '', company: '', checkpoint: null, goal: null,
+      uf: '', city: '', customHolidays: [], disabledHolidays: [], includeOptional: false, autoDouble: true,
+      strategy: { even: true, sat: 0, sun: 0, alt: 0 },
+      reminders: { punchTimes: ['07:30', '12:00', '13:00', '17:30'], punchLead: 10, holidayDaysBefore: 30, punch: true, holidays: true, monthly: true } },
     lastReadId: null,
   };
 }
@@ -95,9 +98,11 @@ export function toBackup(data) {
       employeeName: p.employeeName || null, companyName: p.companyName || null, nsr: p.nsr || null, ocrBox: p.ocrBox || null,
     })),
     adjustments: data.adjustments.map((a) => ({ referenceDate: a.referenceDate, minutesDelta: a.minutesDelta, reason: a.reason || '' })),
-    dayMarks: Object.values(data.marks).map((m) => ({ date: m.date, type: m.type || null, note: m.note || null, doubled: !!m.doubled })),
+    dayMarks: Object.values(data.marks).map((m) => ({ date: m.date, type: m.type || null, note: m.note || null, doubled: !!m.doubled, doubleMode: m.doubleMode || null })),
     checkpoint: data.settings.checkpoint,
-    webSettings: { weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch, goal: data.settings.goal, name: data.settings.name, company: data.settings.company },
+    webSettings: { weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch, goal: data.settings.goal, name: data.settings.name, company: data.settings.company,
+      uf: data.settings.uf, city: data.settings.city, customHolidays: data.settings.customHolidays, disabledHolidays: data.settings.disabledHolidays,
+      includeOptional: data.settings.includeOptional, autoDouble: data.settings.autoDouble, strategy: data.settings.strategy },
   };
 }
 
@@ -114,7 +119,7 @@ export function mergeBackup(data, b) {
     added++;
   }
   for (const a of b.adjustments || []) data.adjustments.push({ id: newId(), referenceDate: a.referenceDate, minutesDelta: a.minutesDelta, reason: a.reason || '' });
-  for (const m of b.dayMarks || []) data.marks[m.date] = { date: m.date, type: m.type || null, note: m.note || null, doubled: !!m.doubled };
+  for (const m of b.dayMarks || []) data.marks[m.date] = { date: m.date, type: m.type || null, note: m.note || null, doubled: !!m.doubled, doubleMode: m.doubleMode || null };
   if (b.checkpoint) data.settings.checkpoint = b.checkpoint;
   if (b.webSettings) Object.assign(data.settings, Object.fromEntries(Object.entries(b.webSettings).filter(([, v]) => v !== undefined && v !== null)));
   return added;

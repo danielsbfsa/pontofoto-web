@@ -1,6 +1,6 @@
 // Funciona sem internet: guarda o app e as bibliotecas no aparelho.
-const VERSION = 'pontofoto-web-1';
-const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/logic.js', 'js/store.js', 'js/ocr.js',
+const VERSION = 'pontofoto-web-3';
+const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/logic.js', 'js/store.js', 'js/ocr.js', 'js/plans.js',
   'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/fonts/manrope.woff2'];
 
 self.addEventListener('install', (e) => {

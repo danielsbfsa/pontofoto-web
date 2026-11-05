@@ -79,30 +79,43 @@ export function expectedFor(date, config) { return config.weekly[weekdayIndex(da
  * diferença até a tolerância vira zero.
  */
 export function summarize(date, dayPunches, mark, config, now = null) {
+  // Entrada/saída pela ORDEM dos horários (1ª = entrada, 2ª = saída...): fotos registradas fora de ordem
+  // não podem inverter as batidas e criar saldo negativo.
   const sorted = [...(dayPunches || [])].sort((a, b) => a.dateTime.localeCompare(b.dateTime));
-  let worked = 0, open = null, incomplete = false;
-  for (const p of sorted) {
-    if (p.type === 'ENTRADA') { if (open) incomplete = true; open = p; }
-    else if (open) { worked += Math.max(0, minutesOf(p.dateTime) - minutesOf(open.dateTime)); open = null; }
-    else incomplete = true;
-  }
-  let openSince = null;
-  if (open) {
-    if (now && dateOf(now) === date && minutesOf(now) > minutesOf(open.dateTime)) {
-      worked += minutesOf(now) - minutesOf(open.dateTime);
-      openSince = open.dateTime;
+  let worked = 0, incomplete = false, openSince = null;
+  for (let i = 0; i + 1 < sorted.length; i += 2) worked += Math.max(0, minutesOf(sorted[i + 1].dateTime) - minutesOf(sorted[i].dateTime));
+  if (sorted.length % 2 === 1) {
+    const last = sorted[sorted.length - 1];
+    if (now && dateOf(now) === date && minutesOf(now) > minutesOf(last.dateTime)) {
+      worked += minutesOf(now) - minutesOf(last.dateTime);
+      openSince = last.dateTime;
     } else incomplete = true;
   }
   const type = mark?.type || null;
-  const expected = type && !DAY_TYPES[type].countsExpected ? 0 : expectedFor(date, config);
-  const credited = mark?.doubled ? worked * 2 : worked;
-  const raw = sorted.length === 0 && !type ? 0 : credited - expected;
+  const holiday = !!(config.holidays && config.holidays.has(date));
+  const expected = (type && !DAY_TYPES[type].countsExpected) || (holiday && !type) ? 0 : expectedFor(date, config);
+  const doubled = isDoubled(date, mark, config);
+  const credited = doubled ? worked * 2 : worked;
+  // dia com batida faltando não entra no banco até ser corrigido
+  const raw = (sorted.length === 0 && !type) || incomplete ? 0 : credited - expected;
   const balance = sorted.length > 0 && Math.abs(raw) <= config.tolerance ? 0 : raw;
   return {
-    date, punches: sorted, mark: mark || null, dayType: type, doubled: !!mark?.doubled,
+    date, punches: sorted, mark: mark || null, dayType: type, doubled, holiday,
     workedMinutes: worked, expectedMinutes: expected, balanceMinutes: balance, incomplete, openSince,
     hasRecords: sorted.length > 0 || !!type,
   };
+}
+
+/**
+ * Horário dobrado (100%): escolha manual do dia (doubleMode 'ON'/'OFF') ou automático
+ * em domingos e feriados (config.autoDouble, ligado por padrão).
+ */
+export function isDoubled(date, mark, config) {
+  if (mark?.doubleMode === 'ON') return true;
+  if (mark?.doubleMode === 'OFF') return false;
+  if (mark?.doubled) return true;
+  if (config.autoDouble === false) return false;
+  return weekdayIndex(date) === 6 || !!(config.holidays && config.holidays.has(date)) || mark?.type === 'FERIADO';
 }
 
 export function groupByDate(punches) {
@@ -149,9 +162,22 @@ export function stats(days, today) {
   };
 }
 
+/** Tipo de uma batida nova: pela posição no dia (quantidade par = entrada). */
 export function suggestType(dayPunches) {
-  const last = [...(dayPunches || [])].sort((a, b) => a.dateTime.localeCompare(b.dateTime)).pop();
-  return last?.type === 'ENTRADA' ? 'SAIDA' : 'ENTRADA';
+  return (dayPunches || []).length % 2 === 0 ? 'ENTRADA' : 'SAIDA';
+}
+
+/** Regrava entrada/saída de todas as batidas pela ordem dos horários de cada dia. Devolve quantas mudaram. */
+export function normalizeTypes(punches) {
+  let changed = 0;
+  const by = groupByDate(punches);
+  for (const day of Object.values(by)) {
+    day.sort((a, b) => a.dateTime.localeCompare(b.dateTime)).forEach((p, i) => {
+      const t = i % 2 === 0 ? 'ENTRADA' : 'SAIDA';
+      if (p.type !== t) { p.type = t; changed++; }
+    });
+  }
+  return changed;
 }
 
 // ---------------- metas e previsão ----------------
@@ -160,7 +186,7 @@ export function workDays(from, to, config, marks) {
   let n = 0;
   for (let d = from; d <= to; d = addDays(d, 1)) {
     const type = marks[d]?.type;
-    const off = type && !DAY_TYPES[type].countsExpected;
+    const off = (type && !DAY_TYPES[type].countsExpected) || (config.holidays && config.holidays.has(d));
     if (expectedFor(d, config) > 0 && !off) n++;
   }
   return n;

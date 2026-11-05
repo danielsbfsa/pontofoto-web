@@ -2,6 +2,7 @@
 import * as L from './logic.js';
 import * as S from './store.js';
 import { readReceipt, readEspelho, fileToCanvas, canvasToBlob } from './ocr.js';
+import * as P from './plans.js';
 
 const $app = document.getElementById('app');
 const $ov = document.getElementById('overlay');
@@ -11,7 +12,22 @@ const ui = { tab: 'hoje', overlay: null, month: null };
 // ---------------- utilidades ----------------
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const cfg = () => ({ weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch });
+let hmapCache = { key: '', map: {} };
+function hmap() {
+  const st = data.settings;
+  const key = JSON.stringify([st.uf, st.city, st.customHolidays, st.disabledHolidays, st.includeOptional, st.confirmedHolidays]);
+  if (hmapCache.key !== key) {
+    const y = new Date().getFullYear();
+    hmapCache = { key, map: P.holidayMap([y - 1, y, y + 1], holidaySettings()) };
+  }
+  return hmapCache.map;
+}
+const holidaySettings = () => ({ uf: data.settings.uf, city: data.settings.city, customHolidays: data.settings.customHolidays || [],
+  disabledHolidays: data.settings.disabledHolidays || [], includeOptional: !!data.settings.includeOptional,
+  confirmedHolidays: data.settings.confirmedHolidays || [] });
+const cfg = () => ({ weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch,
+  holidays: new Set(Object.keys(hmap())), autoDouble: data.settings.autoDouble !== false });
+const strategy = () => data.settings.strategy || { even: true, sat: 0, sun: 0, alt: 0 };
 const nowDT = () => L.localNow();
 const today = () => L.dateOf(nowDT());
 const byDate = () => L.groupByDate(data.punches);
@@ -31,10 +47,11 @@ const fmt = L.formatMinutes, dur = L.formatDuration;
 const firstName = (n) => { const f = (n || '').trim().split(/\s+/)[0] || ''; return f ? f[0].toUpperCase() + f.slice(1).toLowerCase() : ''; };
 const initials = (n) => { const p = (n || '').trim().split(/\s+/).filter(Boolean); return !p.length ? '?' : p.length === 1 ? p[0][0].toUpperCase() : (p[0][0] + p[p.length - 1][0]).toUpperCase(); };
 const greeting = (dt) => { const h = Number(dt.slice(11, 13)); return h >= 5 && h < 12 ? 'Bom dia' : h < 18 && h >= 12 ? 'Boa tarde' : 'Boa noite'; };
-const isDoubleEligible = (date, type) => L.weekdayIndex(date) === 6 || type === 'FERIADO';
+const isDoubleEligible = (date, type) => L.weekdayIndex(date) === 6 || type === 'FERIADO' || !!hmap()[date];
 const bankUntilYesterday = () => L.bank(byDate(), data.marks, cfg(), data.adjustments, data.settings.checkpoint, today());
 
-function save() { S.saveData(data); }
+/** Salva; antes, acerta entrada/saída pela ordem dos horários (evita saldo negativo "fantasma"). */
+function save() { L.normalizeTypes(data.punches); S.saveData(data); }
 
 const ICONS = {
   home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
@@ -87,10 +104,14 @@ function timeline(punches) {
 
 function goalBlock(goal, plan) {
   const title = `Meta: ${goal.targetMinutes === 0 ? 'zerar o banco' : fmt(goal.targetMinutes)} até ${dm(goal.deadline)}`;
+  const t = today(), c = cfg(), st = strategy();
+  const sp = P.strategyPlan(goal, st, bankUntilYesterday(), t, c, data.marks);
+  const tt = P.targetFor(t, goal, st, sp, c, data.marks);
+  const weekend = L.expectedFor(t, c) === 0 || P.isOff(t, c, data.marks);
   const body = plan.reached ? '<div class="big pos">Meta atingida!</div>'
     : plan.expired ? `<div class="h3 neg">Prazo vencido · faltaram ${dur(plan.missingMinutes)}</div>`
-    : `<div class="big" style="color:var(--primary)">Faça +${dur(plan.extraPerDay)} por dia</div>
-       <div class="small muted">Faltam ${dur(plan.missingMinutes)} em ${plan.workDaysLeft} dia(s) de trabalho, contando hoje</div>`;
+    : `<div class="big" style="color:var(--primary)">${tt === 0 ? 'Hoje: sem extra pela estratégia' : weekend ? `Hoje: trabalhar ${dur(tt)}` : `Hoje: +${dur(tt)}`}</div>
+       <div class="small muted">Estratégia: ${P.describeStrategy(st)}${sp.perDay ? ` (+${dur(sp.perDay)}/dia útil)` : ''}${sp.shortfall ? ` · faltariam ${dur(sp.shortfall)}` : ''} · faltam ${dur(plan.missingMinutes)}</div>`;
   return `<div class="row">${icon('flag', `color:${plan.reached ? 'var(--positive)' : 'var(--primary)'}`)}<div class="h3 grow">${title}</div></div>
     <div style="margin-top:8px">${body}</div>
     <div class="progress" style="margin-top:10px"><div style="width:${Math.round(plan.progress * 100)}%;${plan.reached ? 'background:var(--positive)' : ''}"></div></div>`;
@@ -104,7 +125,11 @@ function homeView() {
   const week = Array.from({ length: 7 }, (_, i) => L.summarize(L.addDays(monday, i), by[L.addDays(monday, i)], data.marks[L.addDays(monday, i)], c, now));
   const goal = data.settings.goal;
   const plan = goal ? L.plan(goal, bank, t, c, data.marks) : null;
-  const extraGoal = plan && !plan.reached && !plan.expired && s.expectedMinutes > 0 ? plan.extraPerDay : 0;
+  const sp = goal ? P.strategyPlan(goal, strategy(), bank, t, c, data.marks) : null;
+  const extraGoal = plan && !plan.expired ? P.targetFor(t, goal, strategy(), sp, c, data.marks) : 0;
+  const nextHol = P.upcomingHolidays(t, 60, hmap(), c, data.marks)[0];
+  const missing = missingPunch(t, c, by);
+  const pendingMun = pendingMunicipal(45)[0];
   const f = L.forecast(s, c, extraGoal, now);
   const suggested = L.suggestType(s.punches);
   const name = firstName(data.settings.name);
@@ -130,6 +155,18 @@ function homeView() {
     <div class="row"><div class="grow"><div class="muted">${greeting(now)}${name ? `, ${esc(name)}` : ''}</div>
       <div class="h2">${longLabel(t)}</div></div>
       <button class="avatar" data-act="tab" data-tab="ajustes">${esc(initials(data.settings.name || 'Ponto Foto'))}</button></div>
+
+    ${missing ? `<div class="card tight row tap" data-act="day" data-date="${missing.date}" style="background:color-mix(in srgb, var(--negative) 14%, var(--surface))">${icon('info', 'color:var(--negative);flex:none')}
+      <div class="small grow"><b>Esqueceu algum ponto?</b> ${esc(missing.text)}</div>${icon('right', 'color:var(--muted)')}</div>` : ''}
+
+    ${pendingMun ? `<div class="card"><div class="label" style="color:var(--primary)">Feriado municipal em ${dm(pendingMun.date)}</div>
+      <div class="h3">${esc(pendingMun.name)}</div>
+      <div class="small muted">Nem toda empresa adere aos feriados da cidade. Sua empresa vai folgar nesse dia?</div>
+      <div class="grid2" style="margin-top:10px"><button class="btn outline" data-act="confirmHoliday" data-key="${esc(pendingMun.key)}" data-yes="">Trabalho normal</button>
+      <button class="btn" data-act="confirmHoliday" data-key="${esc(pendingMun.key)}" data-yes="1">É folga</button></div></div>` : ''}
+
+    <div class="card tight tap" data-act="tab" data-tab="agenda"><div>${esc(P.dailyMessage(t))}</div>
+      ${nextHol ? `<div class="small" style="color:var(--primary);font-weight:700;margin-top:8px">Próximo feriado: ${esc(nextHol.name)}, ${dm(nextHol.date)} (${nextHol.weekday})${nextHol.kind === 'prolongado' ? ' · feriadão!' : nextHol.kind === 'ponte' ? ` · dá ponte em ${dm(nextHol.bridge)}` : ''}${nextHol.inDays === 0 ? ' · hoje' : ` · em ${nextHol.inDays} dias`}</div>` : ''}</div>
 
     ${lastRead ? `<div class="card"><div class="h3">Confira o horário lido</div>
       <div class="big" style="color:${typeColor(lastRead.type)}">${typeLabel(lastRead.type)} de ${dm(L.dateOf(lastRead.dateTime))} às ${hmOf(lastRead.dateTime)}</div>
@@ -161,12 +198,35 @@ function homeView() {
       <div class="small muted">${L.DAY_TYPES[s.dayType].countsExpected ? 'A jornada do dia é descontada do banco.' : 'Sem jornada hoje; horas trabalhadas viram crédito.'}</div></div>
       <button class="link" data-act="setMark" data-date="${t}" data-type="">Remover</button></div>` : ''}
 
-    ${isDoubleEligible(t, s.dayType) || s.doubled ? doubledToggle(t, s.doubled) : ''}
+    ${isDoubleEligible(t, s.dayType) || s.holiday || s.doubled ? doubledToggle(t, s.doubled) : ''}
 
     <div class="card"><div class="row"><div class="h3 grow">Marcações de hoje</div><button class="link" data-act="markSheet" data-date="${t}">Marcar dia</button></div>
       ${s.punches.length ? timeline(s.punches) + (s.incomplete ? '<div class="small neg" style="margin-top:6px">Há uma marcação sem par. Confira entradas e saídas.</div>' : '')
         : '<div class="center muted" style="padding:20px 0">Nenhum ponto hoje.<br>Bata o ponto no relógio e fotografe o comprovante.</div>'}</div>
   </div>`;
+}
+
+function pendingMunicipal(days) {
+  const t = today(), end = L.addDays(t, days), y = Number(t.slice(0, 4));
+  return [y, y + 1].flatMap((yy) => P.holidaysForYear(yy, holidaySettings())).filter((h) => h.pending && h.date >= t && h.date <= end);
+}
+function confirmHoliday(key, yes) {
+  const conf = new Set(data.settings.confirmedHolidays || []), dis = new Set(data.settings.disabledHolidays || []);
+  if (yes) { conf.add(key); dis.delete(key); } else { conf.delete(key); dis.add(key); }
+  data.settings.confirmedHolidays = [...conf]; data.settings.disabledHolidays = [...dis];
+}
+
+/** Último dia de trabalho antes de hoje sem pontos ou com marcação sem par. */
+function missingPunch(t, c, by) {
+  let d = L.addDays(t, -1);
+  for (let i = 0; i < 7; i++, d = L.addDays(d, -1)) {
+    if (P.isOff(d, c, data.marks)) continue;
+    const s = L.summarize(d, by[d], data.marks[d], c);
+    if (!s.punches.length) return { date: d, text: `Nenhum ponto em ${dm(d)}. Foi folga? Marque o dia ou registre os horários.` };
+    if (s.incomplete || s.punches.length % 2) return { date: d, text: `Em ${dm(d)} ficou uma marcação sem par (${s.punches.length} batidas).` };
+    return null;
+  }
+  return null;
 }
 
 function doubledToggle(date, on) {
@@ -227,6 +287,25 @@ function chart(days) {
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:140px" preserveAspectRatio="none">${bars}</svg><div class="row" style="gap:0;margin-top:8px">${labels}</div>`;
 }
 
+function weeklyChart(weeks) {
+  const W = 320, H = 160, slot = W / weeks.length, bw = slot * 0.5, mid = H / 2;
+  const maxD = Math.max(60, ...weeks.map((w) => Math.abs(w.delta)));
+  const minB = Math.min(...weeks.map((w) => w.bankEnd)), maxB = Math.max(...weeks.map((w) => w.bankEnd));
+  const span = Math.max(60, maxB - minB);
+  const bars = weeks.map((w, i) => {
+    const x = slot * i + (slot - bw) / 2, h = ((H / 2 - 8) * Math.abs(w.delta)) / maxD;
+    if (!h) return '';
+    return `<rect x="${x}" y="${w.delta >= 0 ? mid - h : mid}" width="${bw}" height="${h}" rx="4" fill="${w.delta >= 0 ? 'var(--positive)' : 'var(--negative)'}" opacity="${w.current ? 0.45 : 1}"/>`;
+  }).join('');
+  const pts = weeks.map((w, i) => [slot * i + slot / 2, H - 8 - ((H - 16) * (w.bankEnd - minB)) / span]);
+  const line = `<polyline points="${pts.map((p) => p.join(',')).join(' ')}" fill="none" stroke="var(--primary)" stroke-width="3"/>` +
+    pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3.5" fill="var(--primary)"/>`).join('');
+  const labels = weeks.map((w, i) => `<div class="center" style="flex:1;font-size:10px">${i % 3 === 0 || i === weeks.length - 1 ? `${w.start.slice(8, 10)}/${w.start.slice(5, 7)}` : ''}</div>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:160px;margin-top:10px" preserveAspectRatio="none">
+    <line x1="0" x2="${W}" y1="${mid}" y2="${mid}" stroke="var(--outline)" stroke-width="2"/>${bars}${line}</svg>
+    <div class="row muted" style="gap:0;margin-top:4px">${labels}</div>`;
+}
+
 function bankView() {
   const t = today(), now = nowDT(), c = cfg(), by = byDate();
   const bank = bankUntilYesterday();
@@ -244,12 +323,29 @@ function bankView() {
       <div class="small muted">${cp ? `Saldo de ${fmt(cp.minutes)} em ${dm(cp.date)} + dias seguintes até ontem` : 'Soma de todos os dias até ontem, com ajustes'}</div>
       ${ts.punches.length ? `<div class="accent" style="margin-top:6px;font-weight:700">Hoje até agora: ${fmt(ts.workedMinutes - ts.expectedMinutes)}</div>` : ''}
       <button class="btn ghost" style="margin-top:16px" data-act="adjust">${icon('sliders')} Editar saldo</button></div>
-    <div class="card">${goal && plan ? goalBlock(goal, plan) + `<div class="row" style="margin-top:8px"><button class="link" data-act="goal">Alterar meta</button><button class="link neg" data-act="removeGoal">Remover</button></div>`
+    <div class="card">${goal && plan ? goalBlock(goal, plan) + `<div class="row" style="margin-top:8px"><button class="link" data-act="strategies">Estratégias</button><button class="link" data-act="goal">Alterar meta</button><button class="link neg" data-act="removeGoal">Remover</button></div>`
       : `<div class="h3">Meta de banco de horas</div><div class="small muted" style="margin-top:4px">Defina o saldo que quer ter e até quando. O app calcula quanto de extra fazer por dia e mostra o horário de saída para chegar lá.</div>
          <button class="btn" style="margin-top:12px" data-act="goal">${icon('flag')} Criar meta</button>`}</div>
     ${cp ? `<div class="card tight row"><div class="grow"><div class="label">Saldo inicial</div>
       <div><span class="h3 ${signClass(cp.minutes)}">${fmt(cp.minutes)}</span> <span class="muted">em ${dmy(cp.date)}</span></div>
       <div class="xs muted">Os dias até essa data não entram mais na conta.</div></div><button class="icon-btn" data-act="removeCheckpoint">${icon('trash')}</button></div>` : ''}
+    ${(() => {
+      const weeks = P.weeklyHistory(by, data.marks, c, data.adjustments, data.settings.checkpoint, t, 12);
+      const tr = P.trend(weeks, bank, goal ? goal.targetMinutes : 0);
+      return `<div class="card"><div class="h3">Banco semana a semana</div>
+        <div class="small muted">Barras: quanto o banco subiu ou desceu em cada semana. Linha: saldo no fim da semana.</div>
+        ${weeklyChart(weeks)}
+        ${tr ? `<div class="small" style="margin-top:8px;font-weight:700;color:${tr.avg >= 0 ? 'var(--positive)' : 'var(--negative)'}">Média das últimas semanas: ${fmt(tr.avg)} por semana${
+          tr.weeksToTarget && tr.missing > 0 ? `. Nesse ritmo, ${goal ? 'bate a meta' : 'zera o banco'} em ${tr.weeksToTarget} semana(s).`
+          : tr.missing > 0 && tr.avg <= 0 ? '. Nesse ritmo o banco não melhora: veja as estratégias da meta.' : '.'}</div>` : ''}</div>`;
+    })()}
+    ${(() => {
+      const inc = Object.keys(by).filter((d) => d < t && (!data.settings.checkpoint || d > data.settings.checkpoint.date))
+        .map((d) => L.summarize(d, by[d], data.marks[d], c)).filter((x) => x.incomplete).sort((a, b) => b.date.localeCompare(a.date));
+      return inc.length ? `<div class="card"><div class="h3 neg">${inc.length} dia(s) com batida faltando</div>
+        <div class="small muted">Esses dias ficam fora do banco até você corrigir no Histórico (para não gerar saldo negativo falso):</div>
+        <div class="chips" style="margin-top:8px">${inc.slice(0, 10).map((x) => `<button class="chip" data-act="day" data-date="${x.date}">${dm(x.date)} · ${x.punches.length} batida${x.punches.length === 1 ? '' : 's'}</button>`).join('')}</div></div>` : '';
+    })()}
     <div class="card"><div class="h3" style="margin-bottom:12px">Últimos 7 dias</div>${chart(last7)}</div>
     <div class="h3">Este mês</div>
     <div class="grid2">
@@ -264,8 +360,51 @@ function bankView() {
   </div>`;
 }
 
+function agendaView() {
+  const t = today(), c = cfg(), hm = hmap(), st = data.settings;
+  const bank = bankUntilYesterday();
+  const up = P.upcomingHolidays(t, 120, hm, c, data.marks);
+  const monthH = up.filter((h) => h.date.slice(0, 7) === t.slice(0, 7));
+  const next = up.filter((h) => !monthH.includes(h)).slice(0, 8);
+  const ideas = P.vacationIdeas(t, 365, c, data.marks, hm);
+  const yEnd = `${Number(t.slice(0, 4)) + (Number(t.slice(5, 7)) >= 10 ? 1 : 0)}-12-31`;
+  const ann = P.annualPlan(t, yEnd, bank, c, data.marks, hm);
+  const year = P.holidaysForYear(Number(t.slice(0, 4)), holidaySettings());
+  const list = ui.showAllHolidays ? year : year.filter((h) => h.date >= t).slice(0, 10);
+  const kindPill = (k) => { const [l, col] = { prolongado: ['Feriadão', 'var(--positive)'], ponte: ['Dá ponte', 'var(--primary)'], fimdesemana: ['No fim de semana', 'var(--muted)'], meio: ['Meio da semana', 'var(--saida)'] }[k];
+    return `<span class="pill" style="background:color-mix(in srgb, ${col} 14%, transparent);color:${col}">${l}</span>`; };
+  const hRow = (h) => `<div class="row" style="padding:6px 0"><div class="grow"><b>${esc(h.name)}</b>
+    <div class="small muted">${dm(h.date)} (${h.weekday}) · ${h.inDays === 0 ? 'hoje' : h.inDays === 1 ? 'amanhã' : `em ${h.inDays} dias`}${h.bridge ? ` · emende ${dm(h.bridge)} (${dur(h.bridgeMinutes)} do banco)` : ''}</div></div>${kindPill(h.kind)}</div>`;
+  const m = MONTHS[Number(t.slice(5, 7)) - 1];
+  return `<div class="stack">
+    <div><div class="muted">Feriados, emendas e planos</div><div class="h1">Agenda</div></div>
+    ${!st.uf ? `<div class="card tap row" data-act="tab" data-tab="ajustes">${icon('info', 'color:var(--primary);flex:none')}<div class="grow"><div class="h3">Informe seu estado e cidade</div><div class="small muted">Para incluir os feriados estaduais e municipais. Toque para abrir os Ajustes.</div></div></div>`
+      : !P.cityKnown(st.uf, st.city) ? `<div class="notice" style="background:color-mix(in srgb, var(--saida) 14%, transparent)">Ainda não tenho os feriados municipais de ${esc(st.city || 'sua cidade')}. Se a sua empresa folga neles, adicione em "Feriados do ano" (botão +).</div>` : ''}
+    <div class="card"><div class="label">Este mês</div><div class="h2">${m[0].toUpperCase() + m.slice(1)}</div>
+      ${monthH.length ? monthH.map(hRow).join('') : '<div style="margin-top:6px">Sem feriados no resto do mês. Bom momento para acumular horas no banco!</div>'}</div>
+    <div class="h3">Próximos feriados</div>
+    ${next.length ? next.map((h) => `<div class="card tight">${hRow(h)}</div>`).join('') : (monthH.length ? '' : '<div class="muted">Nenhum feriado nos próximos 4 meses.</div>')}
+    <div class="h3">Ideias de folga</div>
+    ${ideas.length ? ideas.map((i) => `<div class="card tight"><b>Tire ${i.workdays} dia(s) e folgue ${i.totalOff}</b>
+      <div class="small muted">Folga de ${dm(i.from)} a ${dm(i.to)} (${dur(i.minutes)} do banco ou férias) → de ${dm(i.offStart)} a ${dm(i.offEnd)} sem trabalhar. ${esc([...new Set(i.holidays)].join(', '))}</div></div>`).join('')
+      : '<div class="muted">Sem emendas boas nos próximos 12 meses.</div>'}
+    <div class="xs muted">Férias pela CLT não podem começar nos 2 dias antes de feriado ou do descanso semanal.</div>
+    <div class="card"><div class="h3">Plano de horas até ${yEnd.slice(0, 4)}</div>
+      ${ann.items.length ? `<div style="margin-top:6px">Para emendar ${ann.items.length} ponte(s) com o banco${ann.deficit ? ` e zerar o saldo negativo (${dur(ann.deficit)})` : ''}, acumule ${dur(ann.totalMinutes)}.</div>
+        <div class="h3" style="color:var(--primary);margin-top:4px">Faça +${dur(ann.perDay)} por dia útil a partir de hoje.</div>
+        ${ann.items.map((a) => `<div class="small muted">• ${dm(a.bridge)} (ponte do ${esc(a.name)}): ter ${dur(a.cumulative)} acumuladas</div>`).join('')}`
+        : `<div class="muted" style="margin-top:6px">Nenhuma ponte (feriado na terça ou quinta) até o fim de ${yEnd.slice(0, 4)}.</div>`}</div>
+    <div class="row"><div class="h3 grow">Feriados de ${t.slice(0, 4)}</div><button class="icon-btn" data-act="addHoliday">${icon('plus')}</button></div>
+    ${list.map((h) => `<div class="card tight row"><div class="grow"><b>${dm(h.date)} · ${esc(h.name)}</b><div class="xs ${h.pending ? '' : 'muted'}" style="${h.pending ? 'color:var(--primary)' : ''}">${h.pending ? 'Municipal · a confirmar se a empresa folga' : h.scope}</div></div>
+      ${h.scope === 'Pessoal' ? `<button class="icon-btn" data-act="delHoliday" data-name="${esc(h.name)}">${icon('trash')}</button>`
+        : `<input type="checkbox" style="width:24px;height:24px;accent-color:var(--primary)" data-change="holiday" data-key="${esc(h.key)}" ${h.enabled ? 'checked' : ''}>`}</div>`).join('')}
+    <button class="link" data-act="toggleAllHolidays">${ui.showAllHolidays ? 'Mostrar só os próximos' : 'Ver o ano inteiro'}</button>
+  </div>`;
+}
+
 function settingsView() {
   const st = data.settings;
+  const rem = st.reminders || { punchTimes: ['07:30', '12:00', '13:00', '17:30'], punchLead: 10, holidayDaysBefore: 30, punch: true, holidays: true, monthly: true };
   const presets = [['8h seg–sex', [480, 480, 480, 480, 480, 0, 0]], ['8h48 seg–sex', [528, 528, 528, 528, 528, 0, 0]], ['8h + sáb 4h', [480, 480, 480, 480, 480, 240, 0]], ['7h20 seg–sáb', [440, 440, 440, 440, 440, 440, 0]]];
   const stepper = (act, val, label) => `<div class="stepper"><button class="icon-btn" data-act="${act}" data-d="-1">${icon('minus')}</button><div class="val grow">${label}</div><button class="icon-btn" data-act="${act}" data-d="1">${icon('plus')}</button></div>`;
   return `<div class="stack">
@@ -286,10 +425,29 @@ function settingsView() {
       ${stepper('tolerance', st.tolerance, `${st.tolerance} min`)}</div>
     <div class="card"><div class="h3">Intervalo de almoço</div><div class="small muted" style="margin-bottom:8px">Usado na previsão de saída enquanto você ainda não saiu para o almoço.</div>
       ${stepper('lunch', st.lunch, st.lunch ? dur(st.lunch) : 'sem intervalo')}</div>
+    <div class="card"><div class="h3">Cidade e feriados</div>
+      <div class="small muted">Feriados nacionais, do estado e da cidade zeram a jornada do dia e entram nos planos da Agenda.</div>
+      <div class="row" style="margin-top:10px"><label class="field" style="width:96px"><span>Estado</span><select id="loc-uf" style="font-size:16px">
+        <option value="">UF</option>${P.UFS.map((u) => `<option ${u === st.uf ? 'selected' : ''}>${u}</option>`).join('')}</select></label>
+        <label class="field grow"><span>Cidade</span><input id="loc-city" value="${esc(st.city || '')}" style="font-size:16px"></label></div>
+      <div style="text-align:right"><button class="link" data-act="saveLocation">Salvar local</button></div>
+      ${st.uf ? `<div class="xs muted">${P.cityKnown(st.uf, st.city) ? `Feriados municipais de ${esc(st.city)}: o app pergunta antes de cada um se a sua empresa vai folgar.` : 'Feriados municipais desta cidade ainda não estão no app: se a empresa folga, adicione-os na Agenda (botão +).'}</div>` : ''}
+      <label class="check"><input type="checkbox" data-change="autoDouble" ${st.autoDouble !== false ? 'checked' : ''}><div><b>Domingos e feriados em dobro (100%)</b><div class="small muted">Já vem marcado; dá para desmarcar em cada dia.</div></div></label>
+      <label class="check"><input type="checkbox" data-change="optional" ${st.includeOptional ? 'checked' : ''}><div><b>Contar pontos facultativos</b><div class="small muted">Carnaval e Corpus Christi como folga.</div></div></label></div>
+    <div class="card"><div class="h3">Lembretes no iPhone</div>
+      <div class="small muted" style="margin-top:4px">O iPhone não deixa apps instalados pelo navegador agendarem notificações. Por isso os lembretes vão para o <b>Calendário</b>, com alarme: gere o arquivo, toque nele e escolha <b>Adicionar todos</b>. Esquecimentos de ponto aparecem aqui no app.</div>
+      <label class="check"><input type="checkbox" data-change="rem" data-k="punch" ${rem.punch ? 'checked' : ''}><div><b>Antes de bater o ponto</b> (dias de trabalho)</div></label>
+      ${rem.punch ? `<div class="row" style="flex-wrap:wrap;gap:8px">${rem.punchTimes.map((tm, i) => `<label class="field" style="width:96px;padding:6px 10px"><span>${['Entrada', 'Almoço', 'Volta', 'Saída'][i] || 'Ponto'}</span><input type="time" value="${tm}" data-change="remTime" data-i="${i}" style="font-size:16px"></label>`).join('')}</div>
+        <div class="chips" style="margin-top:8px">${[5, 10, 15, 30].map((v) => `<button class="chip ${rem.punchLead === v ? 'on' : ''}" data-act="remLead" data-v="${v}">${v} min antes</button>`).join('')}</div>` : ''}
+      <label class="check"><input type="checkbox" data-change="rem" data-k="holidays" ${rem.holidays ? 'checked' : ''}><div><b>Feriados</b> (aviso antecipado e na véspera)</div></label>
+      ${rem.holidays ? `<div class="chips">${[1, 7, 15, 30].map((v) => `<button class="chip ${rem.holidayDaysBefore === v ? 'on' : ''}" data-act="remHolDays" data-v="${v}">${v} dia(s) antes</button>`).join('')}</div>` : ''}
+      <label class="check"><input type="checkbox" data-change="rem" data-k="monthly" ${rem.monthly ? 'checked' : ''}><div><b>Resumo do mês</b> (dia 1º: feriados e emendas)</div></label>
+      <button class="btn block" style="margin-top:10px" data-act="exportIcs">${icon('calendar')} Gerar lembretes para o Calendário</button>
+      <div class="xs muted" style="margin-top:6px">Mudou a jornada ou os feriados? Gere de novo; os eventos repetidos são atualizados.</div></div>
     <div class="card"><div class="h3">Backup</div><div class="small muted">Mesmo formato do app Android: dá para levar os dados de um para o outro.</div>
       <div class="grid2" style="margin-top:12px"><button class="btn outline" data-act="exportBackup">Exportar</button><button class="btn outline" data-act="importBackup">Importar</button></div></div>
     <div class="card"><div class="h3">Instalar no iPhone</div><div class="small muted" style="margin-top:4px">No Safari, toque em <b>Compartilhar</b> (quadrado com seta) → <b>Adicionar à Tela de Início</b>. O app abre em tela cheia e funciona sem internet. Na primeira leitura de foto ele baixa o leitor de texto (alguns MB).</div></div>
-    <div class="center xs muted">Ponto Foto web 1.0 · seus dados ficam só neste aparelho.<br>App de controle pessoal, sem valor legal de registro.</div>
+    <div class="center xs muted">Ponto Foto web 1.2 · seus dados ficam só neste aparelho.<br>App de controle pessoal, sem valor legal de registro.</div>
   </div>`;
 }
 
@@ -317,8 +475,7 @@ function overlayView() {
       const e = o.entry, isNew = !data.punches.some((p) => p.id === e.id);
       return sheet(`<div class="row"><div class="h2 grow">${isNew ? 'Novo ponto' : 'Editar ponto'}</div>${isNew ? '' : `<button class="icon-btn" data-act="deletePunch" style="color:var(--negative)">${icon('trash')}</button>`}</div>
         ${o.message ? `<div class="notice" style="background:color-mix(in srgb, var(--negative) 12%, transparent);color:var(--negative);margin-top:10px">${esc(o.message)}</div>` : ''}
-        <div class="toggle2" style="margin-top:14px"><button data-act="editType" data-type="ENTRADA" class="${o.type === 'ENTRADA' ? 'on-e' : ''}">Entrada</button>
-          <button data-act="editType" data-type="SAIDA" class="${o.type === 'SAIDA' ? 'on-s' : ''}">Saída</button></div>
+        <div class="small muted" style="margin-top:12px">Entrada ou saída é definida pela ordem dos horários do dia.</div>
         <div class="grid2" style="margin-top:10px"><label class="field"><span>Data</span><input type="date" id="ed-date" value="${L.dateOf(e.dateTime)}"></label>
           <label class="field"><span>Hora</span><input type="time" id="ed-time" value="${hmOf(e.dateTime)}"></label></div>
         ${e.photoId && e.ocrBox ? `<div class="label" style="margin-top:12px">Horário no comprovante</div><canvas class="crop" data-crop="${e.photoId}" data-box="${esc(e.ocrBox)}" data-act="photo" data-photo="${e.photoId}" style="margin-top:6px"></canvas>` : ''}
@@ -342,8 +499,11 @@ function overlayView() {
           <div><div class="label">Saldo</div><div class="h3 ${signClass(s.balanceMinutes)}">${fmt(s.balanceMinutes)}</div></div></div>
         <div style="margin-top:10px">${s.punches.length ? timeline(s.punches) : '<div class="muted">Nenhuma marcação neste dia.</div>'}</div>
         ${s.incomplete ? '<div class="small neg">Há uma marcação sem par neste dia.</div>' : ''}
-        ${isDoubleEligible(d, s.dayType) || s.doubled ? `<div style="margin-top:10px">${doubledToggle(d, s.doubled)}</div>` : ''}
-        <button class="btn tonal block" style="margin-top:12px" data-act="newOn" data-date="${d}">${icon('plus')} Adicionar marcação</button>
+        ${isDoubleEligible(d, s.dayType) || s.holiday || s.doubled ? `<div style="margin-top:10px">${doubledToggle(d, s.doubled)}</div>` : ''}
+        <div class="h3" style="margin-top:14px">Adicionar marcação neste dia</div>
+        <div class="grid3" style="margin-top:8px"><button class="btn tonal" data-act="photoFor" data-date="${d}" data-cam="1">${icon('camera')} Foto</button>
+          <button class="btn tonal" data-act="photoFor" data-date="${d}" data-cam="">${icon('image')} Galeria</button>
+          <button class="btn tonal" data-act="newOn" data-date="${d}">${icon('edit')} Digitar</button></div>
         <div class="h3" style="margin-top:14px">Tipo do dia</div>
         <div class="chips" style="margin-top:8px">${[['', 'Normal'], ...Object.entries(L.DAY_TYPES).map(([k, v]) => [k, v.label])].map(([k, l]) =>
           `<button class="chip ${(s.dayType || '') === k ? 'on' : ''}" data-act="setMark" data-date="${d}" data-type="${k}" data-keep="1">${l}</button>`).join('')}</div>`);
@@ -375,6 +535,32 @@ function overlayView() {
         <div class="action" data-act="espFiles"><div class="badge" style="background:color-mix(in srgb, var(--negative) 16%, transparent);color:var(--negative)">${icon('file')}</div><div class="grow"><div class="h3">PDF ou fotos</div><div class="small muted">PDF é o mais preciso. Pode escolher várias fotos.</div></div></div>
         <div class="action" data-act="espCamera"><div class="badge" style="background:var(--primary-soft);color:var(--primary)">${icon('camera')}</div><div class="grow"><div class="h3">Fotografar agora</div><div class="small muted">Foto reta, nítida e sem reflexo</div></div></div></div>`);
     case 'espReview': return espReviewView(o);
+    case 'strategy': {
+      const goal = data.settings.goal;
+      if (!goal) return '';
+      const bank = bankUntilYesterday(), c = cfg(), cur = strategy(), cs = o.custom;
+      const sugg = P.suggestStrategies(goal, bank, t, c, data.marks);
+      const pv = P.strategyPlan(goal, cs, bank, t, c, data.marks);
+      const pvText = pv.reached ? 'Meta já atingida.' : pv.surplus ? `Passa da meta em ${dur(pv.surplus)}.` : pv.shortfall ? `Faltariam ${dur(pv.shortfall)}: aumente as horas ou ligue "dividir o resto".`
+        : pv.perDay ? `+${dur(pv.perDay)} por dia útil, além do que escolheu acima.` : 'Isso já cobre a meta.';
+      const step = (k, label, stepV) => `<div class="row" style="padding:4px 0"><div class="grow">${label}</div><div class="stepper">
+        <button class="icon-btn" data-act="custStep" data-k="${k}" data-d="${-stepV}">${icon('minus')}</button><div class="val">${cs[k] ? dur(cs[k]) : 'não'}</div>
+        <button class="icon-btn" data-act="custStep" data-k="${k}" data-d="${stepV}">${icon('plus')}</button></div></div>`;
+      return sheet(`<div class="h2">Como chegar à meta</div><div class="muted">Escolha uma sugestão ou monte a sua combinação.</div>
+        ${sugg.map((g, i) => `<div class="card tight tap" style="margin-top:10px" data-act="pickStrategy" data-i="${i}"><b style="${JSON.stringify(g.strat) === JSON.stringify(cur) ? 'color:var(--primary)' : ''}">${g.label}</b>
+          <div class="small muted">${g.text}</div></div>`).join('')}
+        <div class="h3" style="margin-top:16px">Montar a minha</div>
+        ${step('sat', 'Sábados', 60)}${step('sun', 'Domingos (valem 100%)', 60)}${step('alt', 'Extra seg/qua/sex', 30)}
+        <label class="check"><input type="checkbox" data-change="custEven" ${cs.even ? 'checked' : ''}><div>Dividir o resto nos dias úteis</div></label>
+        <div class="h3" style="color:var(--primary)">${pvText}</div>
+        <button class="btn block" style="margin-top:10px" data-act="useCustom">Usar esta combinação</button>`);
+    }
+    case 'addHoliday':
+      return sheet(`<div class="h2">Novo feriado</div>
+        <label class="field" style="margin-top:12px"><span>Nome</span><input id="hol-name" placeholder="Aniversário da cidade" style="font-size:16px"></label>
+        <label class="field" style="margin-top:10px"><span>Data</span><input type="date" id="hol-date" value="${t}"></label>
+        <label class="check"><input type="checkbox" id="hol-yearly" checked><div>Repete todo ano</div></label>
+        <button class="btn block" style="margin-top:10px" data-act="saveHoliday">Salvar</button>`);
     case 'photo': return `<div class="viewer"><img data-photo-src="${o.photoId}" data-act="zoom" alt="Comprovante"><button class="icon-btn close" data-act="close">${icon('x')}</button></div>`;
     default: return '';
   }
@@ -425,12 +611,12 @@ function espReviewView(o) {
 // ---------------- render ----------------
 
 function tabbar() {
-  const tabs = [['hoje', 'Hoje', 'home'], ['historico', 'Histórico', 'calendar'], ['banco', 'Banco', 'wallet'], ['ajustes', 'Ajustes', 'sliders']];
+  const tabs = [['hoje', 'Hoje', 'home'], ['historico', 'Histórico', 'calendar'], ['banco', 'Banco', 'wallet'], ['agenda', 'Agenda', 'flag'], ['ajustes', 'Ajustes', 'sliders']];
   return `<nav class="tabbar"><div class="in">${tabs.map(([k, l, ic]) => `<button class="tab ${ui.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span class="ic">${icon(ic)}</span>${l}</button>`).join('')}</div></nav>`;
 }
 
 function renderApp() {
-  const views = { hoje: homeView, historico: historyView, banco: bankView, ajustes: settingsView };
+  const views = { hoje: homeView, historico: historyView, banco: bankView, agenda: agendaView, ajustes: settingsView };
   $app.innerHTML = views[ui.tab]() + tabbar();
   hydrateImages($app);
 }
@@ -500,7 +686,7 @@ function newDraft(date, source = 'MANUAL_PUNCH') {
 function setMark(date, patch) {
   const cur = data.marks[date] || { date, type: null, note: null, doubled: false };
   const next = { ...cur, ...patch };
-  if (!next.type && !next.doubled && !next.note) delete data.marks[date]; else data.marks[date] = next;
+  if (!next.type && !next.doubled && !next.doubleMode && !next.note) delete data.marks[date]; else data.marks[date] = next;
   save();
 }
 function checkProfile(entry) {
@@ -511,6 +697,8 @@ function checkProfile(entry) {
 }
 
 async function handlePhoto(file) {
+  const fallbackDate = ui.photoDate || null;
+  ui.photoDate = null;
   loading('Lendo o comprovante...');
   let res = null;
   try { res = await readReceipt(file, loading); } catch (e) { console.error(e); }
@@ -519,8 +707,10 @@ async function handlePhoto(file) {
   const photoId = photoBlob ? await S.putPhoto(photoBlob) : null;
   loading(null);
   const r = res?.receipt || {};
+  if (!r.date && fallbackDate && r.time !== null && r.time !== undefined) r.date = fallbackDate;
   if (r.date && r.time !== null && r.time !== undefined) {
     const dt = L.makeDT(r.date, r.time);
+    const otherDay = fallbackDate && fallbackDate !== r.date ? `O comprovante é de ${dm(r.date)}, não do dia escolhido: salvei na data do comprovante.` : null;
     if (r.nsr && data.punches.some((p) => p.nsr === r.nsr && p.dateTime === dt)) {
       await S.deletePhoto(photoId);
       toast('Esse comprovante já estava registrado');
@@ -533,15 +723,65 @@ async function handlePhoto(file) {
     data.lastReadId = entry.id;
     save(); ui.tab = 'hoje'; render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    toast(`${typeLabel(entry.type)} ${dm(r.date)} às ${L.hm(r.time)} registrada${warn ? `\n${warn}` : ''}`, {
+    toast(`${typeLabel(entry.type)} ${dm(r.date)} às ${L.hm(r.time)} registrada${otherDay ? `\n${otherDay}` : ''}${warn ? `\n${warn}` : ''}`, {
       label: 'Desfazer', run: () => { data.punches = data.punches.filter((p) => p.id !== entry.id); data.lastReadId = null; S.deletePhoto(photoId); save(); render(); },
     });
   } else {
-    const d = newDraft(r.date || today(), 'PHOTO');
+    const d = newDraft(r.date || fallbackDate || today(), 'PHOTO');
     d.photoId = photoId; d.employeeName = r.employeeName || null; d.companyName = r.company || null; d.nsr = r.nsr || null;
     openOverlay({ kind: 'edit', entry: d, type: d.type, message: res ? 'Não consegui ler a data e a hora da foto. Confira e salve.'
       : 'Não consegui usar o leitor de texto (na primeira vez é preciso internet). Digite o horário.' });
   }
+}
+
+function remSettings() {
+  if (!data.settings.reminders) data.settings.reminders = { punchTimes: ['07:30', '12:00', '13:00', '17:30'], punchLead: 10, holidayDaysBefore: 30, punch: true, holidays: true, monthly: true };
+  return data.settings.reminders;
+}
+
+/** Arquivo de calendário (.ics) com alarmes: o iPhone avisa mesmo com o app fechado. */
+function buildIcs() {
+  const r = remSettings(), c = cfg(), t = today();
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+  const ics = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  const d8 = (d) => d.replace(/-/g, '');
+  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ponto Foto//PT-BR', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:Ponto Foto'];
+  const ev = (uid, lines) => out.push('BEGIN:VEVENT', `UID:${uid}@pontofoto`, `DTSTAMP:${stamp}`, ...lines, 'END:VEVENT');
+  const alarm = (trigger, text) => ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${ics(text)}`, `TRIGGER:${trigger}`, 'END:VALARM'];
+  if (r.punch) {
+    const days = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'].filter((_, i) => c.weekly[i] > 0);
+    const names = ['Entrada', 'Saída para o almoço', 'Volta do almoço', 'Saída'];
+    const monday = L.addDays(t, -L.weekdayIndex(t));
+    r.punchTimes.forEach((tm, i) => {
+      if (!days.length || !tm) return;
+      const [h, m] = tm.split(':');
+      const exdates = [];
+      for (const d of Object.keys(hmap())) if (d >= t && c.weekly[L.weekdayIndex(d)] > 0) exdates.push(`${d8(d)}T${h}${m}00`);
+      ev(`ponto-${i}`, [`DTSTART;TZID=America/Sao_Paulo:${d8(monday)}T${h}${m}00`, 'DURATION:PT5M', `RRULE:FREQ=WEEKLY;BYDAY=${days.join(',')}`,
+        ...(exdates.length ? [`EXDATE;TZID=America/Sao_Paulo:${exdates.join(',')}`] : []),
+        `SUMMARY:${ics(`Ponto: ${names[i] || 'ponto'} (${tm})`)}`, `DESCRIPTION:${ics('Bata o ponto e fotografe o comprovante no Ponto Foto.')}`,
+        ...alarm(`-PT${r.punchLead}M`, `Daqui a ${r.punchLead} min: ${names[i] || 'ponto'}`)]);
+    });
+  }
+  const up = P.upcomingHolidays(t, 400, hmap(), c, data.marks);
+  if (r.holidays) for (const h of up) {
+    const tip = h.kind === 'prolongado' ? 'Fim de semana prolongado!' : h.kind === 'ponte' ? `Dá para emendar ${dm(h.bridge)} usando ${dur(h.bridgeMinutes)} do banco.` : '';
+    ev(`feriado-${h.date}`, [`DTSTART;VALUE=DATE:${d8(h.date)}`, `DTEND;VALUE=DATE:${d8(L.addDays(h.date, 1))}`, 'TRANSP:TRANSPARENT',
+      `SUMMARY:${ics(`Feriado: ${h.name}`)}`, `DESCRIPTION:${ics(tip)}`,
+      ...alarm(r.holidayDaysBefore > 1 ? `-P${r.holidayDaysBefore - 1}DT15H` : '-PT15H', `Feriado em ${r.holidayDaysBefore} dia(s): ${h.name}. ${tip}`),
+      ...alarm('-PT6H', `Amanhã é feriado: ${h.name}. Bom descanso!`)]);
+  }
+  if (r.monthly) for (let i = 1; i <= 12; i++) {
+    const [y, m] = t.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1 + i, 1));
+    const first = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    const dig = P.monthDigest(first.slice(0, 7), first, c, data.marks, hmap());
+    const txt = dig.holidays.length ? dig.holidays.map((h) => `${dm(h.date)} ${h.name} (${h.weekday}${h.kind === 'ponte' ? ', dá ponte' : h.kind === 'prolongado' ? ', feriadão' : ''})`).join(' · ')
+      : 'Sem feriados este mês. Bom mês para acumular horas no banco!';
+    ev(`mes-${first}`, [`DTSTART;TZID=America/Sao_Paulo:${d8(first)}T090000`, 'DURATION:PT10M', `SUMMARY:${ics('Seu mês no Ponto Foto')}`, `DESCRIPTION:${ics(txt)}`, ...alarm('PT0M', txt)]);
+  }
+  out.push('END:VCALENDAR');
+  return out.join('\r\n');
 }
 
 async function shareOrDownload(blob, filename, title) {
@@ -684,6 +924,29 @@ const actions = {
   espFiles: () => { closeOverlay(); document.getElementById('in-esp-files').click(); },
   espCamera: () => { closeOverlay(); document.getElementById('in-esp-camera').click(); },
   espApply: () => applyEspelho(ui.overlay),
+  confirmHoliday: (d) => { confirmHoliday(d.key, !!d.yes); save(); renderApp(); toast(d.yes ? 'Marcado como feriado' : 'Dia de trabalho normal'); },
+  photoFor: (d) => { ui.photoDate = d.date; closeOverlay(); document.getElementById(d.cam ? 'in-camera' : 'in-gallery').click(); },
+  strategies: () => openOverlay({ kind: 'strategy', custom: { ...strategy() } }),
+  pickStrategy: (d) => {
+    const g = P.suggestStrategies(data.settings.goal, bankUntilYesterday(), today(), cfg(), data.marks)[Number(d.i)];
+    data.settings.strategy = g.strat; save(); ui.overlay = null; render(); toast('Estratégia escolhida');
+  },
+  custStep: (d) => { const cs = ui.overlay.custom; cs[d.k] = Math.max(0, Math.min(600, (cs[d.k] || 0) + Number(d.d))); renderOverlay(); },
+  useCustom: () => { data.settings.strategy = { ...ui.overlay.custom }; save(); ui.overlay = null; render(); toast('Estratégia escolhida'); },
+  addHoliday: () => openOverlay({ kind: 'addHoliday' }),
+  saveHoliday: () => {
+    const name = document.getElementById('hol-name').value.trim(), date = document.getElementById('hol-date').value;
+    if (!name || !date) { toast('Preencha o nome e a data'); return; }
+    const spec = document.getElementById('hol-yearly').checked ? date.slice(5) : date;
+    data.settings.customHolidays = [...(data.settings.customHolidays || []), { spec, name }];
+    save(); ui.overlay = null; render(); toast('Feriado adicionado');
+  },
+  delHoliday: (d) => { data.settings.customHolidays = (data.settings.customHolidays || []).filter((h) => h.name !== d.name); save(); renderApp(); },
+  toggleAllHolidays: () => { ui.showAllHolidays = !ui.showAllHolidays; renderApp(); },
+  saveLocation: () => { data.settings.uf = document.getElementById('loc-uf').value; data.settings.city = document.getElementById('loc-city').value.trim(); save(); renderApp(); toast('Local salvo'); },
+  remLead: (d) => { remSettings().punchLead = Number(d.v); save(); renderApp(); },
+  remHolDays: (d) => { remSettings().holidayDaysBefore = Number(d.v); save(); renderApp(); },
+  exportIcs: () => shareOrDownload(new Blob([buildIcs()], { type: 'text/calendar' }), 'pontofoto-lembretes.ics', 'Lembretes Ponto Foto'),
   saveProfile: () => { data.settings.name = document.getElementById('pf-name').value.trim(); data.settings.company = document.getElementById('pf-company').value.trim(); save(); renderApp(); toast('Perfil salvo'); },
   preset: (d) => { const presets = [[480, 480, 480, 480, 480, 0, 0], [528, 528, 528, 528, 528, 0, 0], [480, 480, 480, 480, 480, 240, 0], [440, 440, 440, 440, 440, 440, 0]]; data.settings.weekly = presets[Number(d.i)]; save(); renderApp(); },
   weekly: (d) => { const w = [...data.settings.weekly]; w[Number(d.i)] = Math.max(0, Math.min(16 * 60, w[Number(d.i)] + Number(d.d))); data.settings.weekly = w; save(); renderApp(); },
@@ -704,10 +967,21 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('change', (ev) => {
   const el = ev.target;
   const kind = el.dataset?.change;
-  if (kind === 'doubled') { setMark(el.dataset.date, { doubled: el.checked }); renderApp(); if (ui.overlay?.kind === 'day') renderOverlay(); }
+  if (kind === 'doubled') { setMark(el.dataset.date, { doubled: false, doubleMode: el.checked ? 'ON' : 'OFF' }); renderApp(); if (ui.overlay?.kind === 'day') renderOverlay(); }
   else if (kind === 'weekly') { const [h, m] = (el.value || '00:00').split(':').map(Number); const w = [...data.settings.weekly]; w[Number(el.dataset.i)] = h * 60 + m; data.settings.weekly = w; save(); renderApp(); }
   else if (kind === 'espToggle') { const i = ui.overlay.index[el.dataset.i]; if (i) i.selected = el.checked; updateEspButton(); }
   else if (kind === 'espBank') { ui.overlay.matchBank = el.checked; updateEspButton(); }
+  else if (kind === 'holiday' && el.dataset.key.startsWith('Municipal:')) { confirmHoliday(el.dataset.key, el.checked); save(); renderApp(); }
+  else if (kind === 'holiday') {
+    const set = new Set(data.settings.disabledHolidays || []);
+    if (el.checked) set.delete(el.dataset.key); else set.add(el.dataset.key);
+    data.settings.disabledHolidays = [...set]; save(); renderApp();
+  }
+  else if (kind === 'autoDouble') { data.settings.autoDouble = el.checked; save(); renderApp(); }
+  else if (kind === 'optional') { data.settings.includeOptional = el.checked; save(); renderApp(); }
+  else if (kind === 'rem') { remSettings()[el.dataset.k] = el.checked; save(); renderApp(); }
+  else if (kind === 'remTime') { remSettings().punchTimes[Number(el.dataset.i)] = el.value || '00:00'; save(); }
+  else if (kind === 'custEven') { ui.overlay.custom.even = el.checked; renderOverlay(); }
 });
 document.addEventListener('input', (ev) => { if (ev.target.dataset?.input === 'goalPreview') goalPreview(); });
 
@@ -724,6 +998,8 @@ function bindFile(id, fn) {
 }
 bindFile('in-camera', (f) => handlePhoto(f[0]));
 bindFile('in-gallery', (f) => handlePhoto(f[0]));
+// escolheu "Foto/Galeria" num dia anterior e cancelou: volta ao normal
+window.addEventListener('focus', () => setTimeout(() => { if (ui.photoDate && !document.querySelector('.loading')) ui.photoDate = null; }, 1500));
 bindFile('in-esp-camera', handleEspelho);
 bindFile('in-esp-files', handleEspelho);
 bindFile('in-backup', async (f) => {
@@ -744,6 +1020,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rend
 
 (async () => {
   data = await S.loadData();
+  if (L.normalizeTypes(data.punches)) S.saveData(data);
   render();
   S.requestPersistence();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
