@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ponto Foto</title>
+  <meta name="description" content="Registro de ponto pela foto do comprovante, banco de horas e conferência do espelho.">
+  <meta name="theme-color" content="#0D0E14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Ponto Foto">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <main id="app"></main>
+  <div id="overlay"></div>
+  <input id="in-camera" class="hidden-input" type="file" accept="image/*" capture="environment">
+  <input id="in-gallery" class="hidden-input" type="file" accept="image/*">
+  <input id="in-esp-camera" class="hidden-input" type="file" accept="image/*" capture="environment">
+  <input id="in-esp-files" class="hidden-input" type="file" accept="image/*,application/pdf" multiple>
+  <input id="in-backup" class="hidden-input" type="file" accept="application/json,.json">
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
