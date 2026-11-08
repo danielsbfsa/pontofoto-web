@@ -33,7 +33,24 @@ async function getWorker(onStatus) {
 }
 
 /** Abre a imagem já "em pé" (o navegador aplica a rotação da câmera) com lado maior <= maxSide. */
+/** Comprovante em PDF (REP-P manda PDF): desenha a 1ª página. */
+async function pdfToCanvas(file, width = 1800) {
+  await loadScript(VENDOR + 'pdfjs/pdf.min.js');
+  const pdfjs = window.pdfjsLib;
+  pdfjs.GlobalWorkerOptions.workerSrc = VENDOR + 'pdfjs/pdf.worker.min.js';
+  const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const page = await doc.getPage(1);
+  const vp1 = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: width / vp1.width });
+  const c = document.createElement('canvas');
+  c.width = Math.round(vp.width); c.height = Math.min(6000, Math.round(vp.height));
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return c;
+}
+
 export async function fileToCanvas(file, maxSide = 2400) {
+  if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) return pdfToCanvas(file);
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((resolve, reject) => {

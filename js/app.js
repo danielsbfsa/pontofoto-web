@@ -480,7 +480,7 @@ function overlayView() {
         <div class="grow"><div class="h3">${title}</div><div class="small muted">${sub}</div></div>${icon('right', 'color:var(--muted)')}</div>`;
       return sheet(`<div class="h2">Bater ponto</div><div style="color:${typeColor(sug)};font-weight:700">Próxima marcação: ${typeLabel(sug).toLowerCase()}</div>
         <div style="margin-top:12px">${row('camera', 'camera', 'var(--primary)', 'Fotografar comprovante', 'Lê data e hora e salva sozinho')}
-        ${row('gallery', 'image', 'var(--entrada)', 'Escolher da galeria', 'Foto do comprovante que você já tirou')}
+        ${row('gallery', 'image', 'var(--entrada)', 'Galeria ou PDF', 'Foto ou PDF do comprovante (apps de ponto mandam PDF)')}
         ${row('manual', 'edit', 'var(--saida)', 'Digitar horário', 'Sem comprovante')}</div>`);
     }
     case 'edit': {
