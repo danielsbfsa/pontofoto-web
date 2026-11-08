@@ -47,3 +47,26 @@ test('primeiro nome', () => {
   assert.ok(L.sameName('Joao', 'JOAO CARLOS PEREIRA'));
   assert.ok(!L.sameName('Joao', 'MARIA SOUZA'));
 });
+
+test('assistente aprende a posição e acerta com a foto deslocada', () => {
+  const rec = (dx, dy, s, printed, punch, date) => [
+    { text: `EMISSAO ${printed}`, box: { l: 0.1, t: 0.1, r: 0.6, b: 0.13 } },
+    { text: 'EMPRESA FICTICIA', box: { l: 0.1, t: 0.2, r: 0.7, b: 0.23 } },
+    { text: 'NSR 000123', box: { l: 0.1, t: 0.3, r: 0.5, b: 0.33 } },
+    { text: date, box: { l: 0.1, t: 0.5, r: 0.45, b: 0.53 } },
+    { text: punch, box: { l: 0.5, t: 0.5, r: 0.7, b: 0.53 } },
+    { text: 'OBRIGADO', box: { l: 0.1, t: 0.8, r: 0.4, b: 0.83 } },
+  ].map((l) => ({ ...l, box: { l: dx + l.box.l * s, t: dy + l.box.t * s, r: dx + l.box.r * s, b: dy + l.box.b * s } }));
+  let p = L.learnLayout(null, rec(0, 0, 1, '10:00', '07:58', '05/11/2026'), hm(7, 58), '2026-11-05', true);
+  p = L.learnLayout(p, rec(0.02, 0.05, 0.9, '11:30', '12:01', '06/11/2026'), hm(12, 1), '2026-11-06', true);
+  assert.ok(L.isTrained(p));
+  const g = L.guidedRead(p, rec(0.15, 0.1, 0.7, '09:15', '17:42', '07/11/2026'), T);
+  assert.equal(g.time, hm(17, 42));
+  assert.equal(g.date, '2026-11-07');
+});
+
+test('backup malformado é recusado', () => {
+  assert.throws(() => L.validateBackup({ punches: [{ dateTime: '<img src=x>', type: 'ENTRADA' }] }));
+  assert.throws(() => L.validateBackup({ adjustments: [{ referenceDate: '2026-11-01', minutesDelta: 'x' }] }));
+  assert.ok(L.validateBackup({ punches: [{ dateTime: '2026-11-01T08:00', type: 'ENTRADA' }], adjustments: [], dayMarks: [] }));
+});

@@ -615,3 +615,122 @@ export function compareEspelho(esp, byDate, marks) {
     return { date: d.date, espelho: d, app, issues: compareDay(d, app, marks[d.date]) };
   });
 }
+
+// ---------------- assistente de leitura (aprende o modelo de comprovante do usuário) ----------------
+// Guarda só posições (relativas à área do texto) e rótulos genéricos ("HORA", "ÀS"). Nunca texto do comprovante.
+
+/** Horários de um trecho (uma linha da foto). */
+export function timesIn(line) {
+  const text = String(line).toUpperCase();
+  const out = [];
+  const m = labeledTimeRx.exec(text);
+  if (m) { const t = buildTime(fixDigits(m[1]), fixDigits(m[2])); if (t !== null) out.push(t); }
+  for (const x of matches(timeRx, text, (p, p2) => isDigit(p) || ((p === ':' || p === '.' || p === ',') && isDigit(p2)))) {
+    let h = Number(x[1]); const ap = x[3] || '';
+    if (ap.startsWith('P') && h < 12) h += 12;
+    if (ap.startsWith('A') && h === 12) h = 0;
+    const t = buildTime(h, Number(x[2])); if (t !== null && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+/** Datas de um trecho (uma linha da foto). */
+export function datesIn(line, today = null) {
+  const r = parseReceipt(line, today);
+  return r.date ? [r.date] : [];
+}
+
+const box = (l, t, r, b) => ({ l, t, r, b });
+const cxOf = (b) => (b.l + b.r) / 2, cyOf = (b) => (b.t + b.b) / 2;
+export function textArea(lines) {
+  if (!lines.length) return null;
+  const a = lines.reduce((u, x) => box(Math.min(u.l, x.box.l), Math.min(u.t, x.box.t), Math.max(u.r, x.box.r), Math.max(u.b, x.box.b)), lines[0].box);
+  return a.r - a.l > 0.02 && a.b - a.t > 0.02 ? a : null;
+}
+export const toRelative = (b, a) => box((b.l - a.l) / (a.r - a.l), (b.t - a.t) / (a.b - a.t), (b.r - a.l) / (a.r - a.l), (b.b - a.t) / (a.b - a.t));
+export const toAbsolute = (b, a) => box(a.l + b.l * (a.r - a.l), a.t + b.t * (a.b - a.t), a.l + b.r * (a.r - a.l), a.t + b.b * (a.b - a.t));
+
+const GENERIC_LABELS = new Set(['HORA', 'HR', 'HORARIO', 'ÀS', 'AS', 'DATA', 'DIA', 'DT', 'EM', 'REGISTRADO', 'REGISTRADA', 'MARCACAO', 'MARCAÇÃO', 'BATIDA', 'ENTRADA', 'SAIDA', 'SAÍDA', 'PONTO', 'REGISTRO']);
+const cleanT = (s) => s.toUpperCase().replace(/O/g, '0').replace(/ /g, '');
+function timePatterns(t) {
+  const h = Math.floor(t / 60), m = pad2(t % 60);
+  return [`${pad2(h)}:${m}`, `${h}:${m}`, `${pad2(h)}H${m}`, `${h}H${m}`, `${pad2(h)}.${m}`];
+}
+function datePatterns(d) {
+  const [y, mo, da] = d.split('-');
+  return [`${da}/${mo}/${y}`, `${da}/${mo}/${y.slice(2)}`, `${Number(da)}/${Number(mo)}/${y}`, d, `${da}-${mo}-${y}`, `${da}.${mo}.${y}`, `${da}/${mo}`];
+}
+export function locate(lines, patterns) {
+  for (const p of patterns) {
+    const hit = lines.find((l) => cleanT(l.text).includes(p));
+    if (!hit) continue;
+    const up = hit.text.toUpperCase();
+    const idx = up.replace(/O/g, '0').indexOf(p.slice(0, 2));
+    const before = idx > 0 ? up.slice(0, idx) : '';
+    const m = /([A-ZÀ-Ú]{2,14})\s*[:;.\-]?\s*$/.exec(before);
+    return { line: hit, label: m && GENERIC_LABELS.has(m[1]) ? m[1] : null };
+  }
+  return null;
+}
+function mergeHint(old, b, label, manual) {
+  if (!old || manual) return { box: b, label: label || old?.label || null, samples: (old?.samples || 0) + 1, manual: manual || !!old?.manual };
+  const w = Math.min(0.7, old.samples / (old.samples + 1));
+  const mix = (a, c) => a * w + c * (1 - w);
+  return { box: box(mix(old.box.l, b.l), mix(old.box.t, b.t), mix(old.box.r, b.r), mix(old.box.b, b.b)), label: label || old.label, samples: old.samples + 1, manual: old.manual };
+}
+export const isTrained = (p) => !!p && ((p.time?.samples || 0) >= 2 || !!p.time?.manual);
+
+/** Aprende com uma leitura confirmada/corrigida. manualTime/manualDate: área marcada pelo usuário (frações da imagem). */
+export function learnLayout(profile, lines, time, date, corrected, manualTime = null, manualDate = null) {
+  const p = { time: null, date: null, confirmed: 0, corrected: 0, ...(profile || {}) };
+  const area = textArea(lines) || box(0, 0, 1, 1);
+  const th = time !== null && time !== undefined ? locate(lines, timePatterns(time)) : null;
+  const tb = manualTime || th?.line.box;
+  if (tb) p.time = mergeHint(p.time, toRelative(tb, area), th?.label, !!manualTime);
+  const dh = date ? locate(lines, datePatterns(date)) : null;
+  const db = manualDate || dh?.line.box;
+  if (db) p.date = mergeHint(p.date, toRelative(db, area), dh?.label, !!manualDate);
+  if (corrected) p.corrected++; else p.confirmed++;
+  return p;
+}
+
+/** Lê hora e data procurando primeiro onde o padrão do usuário diz que elas ficam. */
+export function guidedRead(profile, lines, today = null) {
+  const area = textArea(lines);
+  if (!area || !profile) return { time: null, date: null, timeScore: 0, dateScore: 0 };
+  const best = (hint, read) => {
+    if (!hint) return [null, 0];
+    const target = toAbsolute(hint.box, area);
+    let bv = null, bs = 0;
+    for (const line of lines) {
+      const dist = Math.hypot((cxOf(line.box) - cxOf(target)) / Math.max(area.r - area.l, 0.01), (cyOf(line.box) - cyOf(target)) / Math.max(area.b - area.t, 0.01));
+      if (dist > 0.3) continue;
+      const vals = read(line.text);
+      if (!vals.length) continue;
+      let s = 1 / (1 + dist * 10);
+      if (hint.label && line.text.toUpperCase().includes(hint.label)) s += 0.5;
+      s *= Math.max(0.4, Math.min(hint.samples, 4) / 4) + (hint.manual ? 0.5 : 0);
+      if (s > bs) { bs = s; bv = vals[0]; }
+    }
+    return [bv, bs];
+  };
+  const [time, timeScore] = best(profile.time, (t) => timesIn(t));
+  const [date, dateScore] = best(profile.date, (t) => datesIn(t, today));
+  return { time, date, timeScore, dateScore };
+}
+
+/** Valida um backup vindo de fora antes de importar (formato, tipos e limites). Lança erro se inválido. */
+export function validateBackup(b) {
+  if (!b || typeof b !== 'object') throw new Error('Arquivo inválido');
+  const isDT = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s);
+  const isD = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.slice(0, 10));
+  const num = (n) => Number.isInteger(n) && Math.abs(n) <= 100000;
+  const punches = b.punches || [], adj = b.adjustments || [], marks = b.dayMarks || [];
+  if (!Array.isArray(punches) || punches.length > 50000) throw new Error('Pontos inválidos');
+  for (const p of punches) if (!isDT(p.dateTime) || !['ENTRADA', 'SAIDA'].includes(p.type)) throw new Error('Ponto inválido');
+  if (!Array.isArray(adj) || adj.length > 10000) throw new Error('Ajustes inválidos');
+  for (const a of adj) if (!isD(a.referenceDate) || !num(a.minutesDelta)) throw new Error('Ajuste inválido');
+  if (!Array.isArray(marks) || marks.length > 20000) throw new Error('Dias inválidos');
+  for (const m of marks) if (!isD(m.date) || (m.type && !DAY_TYPES[m.type])) throw new Error('Dia inválido');
+  if (b.checkpoint && (!isD(b.checkpoint.date) || !num(b.checkpoint.minutes))) throw new Error('Saldo inválido');
+  return true;
+}

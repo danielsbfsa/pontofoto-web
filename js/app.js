@@ -1,7 +1,7 @@
 // Ponto Foto (web/iPhone): telas e fluxos. Mesmas regras do app Android (logic.js).
 import * as L from './logic.js';
 import * as S from './store.js';
-import { readReceipt, readEspelho, fileToCanvas, canvasToBlob } from './ocr.js';
+import { readReceipt, readEspelho, readMarked, fileToCanvas, canvasToBlob } from './ocr.js';
 import * as P from './plans.js';
 
 const $app = document.getElementById('app');
@@ -413,6 +413,14 @@ function settingsView() {
       <div><div class="h3">Perfil</div><div class="small muted">Só o primeiro nome, opcional.</div></div></div>
       <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="pf-name" value="${esc(st.name)}" style="font-size:16px"></label>
       <div style="text-align:right"><button class="link" data-act="saveProfile">Salvar</button></div></div>
+    <div class="card"><div class="h3">Assistente de leitura</div>
+      <div class="small" style="margin-top:4px">${st.layout?.time?.manual ? 'Aprendeu onde ficam a hora no seu comprovante (você marcou na foto).'
+        : L.isTrained(st.layout) ? 'Já conhece o seu modelo de comprovante: procura a hora no mesmo lugar de sempre.'
+        : st.layout?.time ? 'Aprendendo o seu modelo de comprovante. Confirme ou corrija as próximas leituras.'
+        : 'Ainda não aprendeu. A cada leitura que você confirmar ou corrigir, ele descobre onde ficam a hora e a data no seu comprovante.'}</div>
+      ${st.layout ? `<div class="xs muted">${st.layout.confirmed || 0} confirmada(s) · ${st.layout.corrected || 0} correção(ões)</div>` : ''}
+      <div class="xs muted" style="margin-top:4px">Se errar, abra o ponto e toque em "Marcar na foto". Só posições ficam guardadas, nunca o texto do comprovante.</div>
+      ${st.layout?.time ? '<button class="link" data-act="resetLayout">Esquecer o padrão (troquei de relógio de ponto)</button>' : ''}</div>
     <div class="card"><div class="h3">Privacidade e segurança</div>
       <div class="small muted">Tudo fica só neste aparelho, sem conta e sem servidor. CPF, nome completo e empresa nunca são salvos; nas fotos guardadas, esses dados ficam cobertos por uma tarja.</div>
       <label class="check"><input type="checkbox" data-change="keepPhotos" ${st.keepPhotos === false ? '' : 'checked'}><div><b>Guardar foto do comprovante</b> (com tarja). Desligado: só o horário fica salvo.</div></label>
@@ -433,7 +441,7 @@ function settingsView() {
       <div class="small muted">Feriados nacionais, do estado e da cidade zeram a jornada do dia e entram nos planos da Agenda.</div>
       <div class="row" style="margin-top:10px"><label class="field" style="width:96px"><span>Estado</span><select id="loc-uf" style="font-size:16px">
         <option value="">UF</option>${P.UFS.map((u) => `<option ${u === st.uf ? 'selected' : ''}>${u}</option>`).join('')}</select></label>
-        <label class="field grow"><span>Cidade</span><input id="loc-city" value="${esc(st.city || '')}" style="font-size:16px"></label></div>
+        <label class="field grow"><span>Cidade</span><input id="loc-city" list="loc-cities" autocomplete="off" placeholder="Digite e escolha" value="${esc(st.city || '')}" style="font-size:16px"><datalist id="loc-cities"></datalist></label></div>
       <div style="text-align:right"><button class="link" data-act="saveLocation">Salvar local</button></div>
       ${st.uf ? `<div class="xs muted">${P.cityKnown(st.uf, st.city) ? `Feriados municipais de ${esc(st.city)}: o app pergunta antes de cada um se a sua empresa vai folgar.` : 'Feriados municipais desta cidade ainda não estão no app: se a empresa folga, adicione-os na Agenda (botão +).'}</div>` : ''}
       <label class="check"><input type="checkbox" data-change="autoDouble" ${st.autoDouble !== false ? 'checked' : ''}><div><b>Domingos e feriados em dobro (100%)</b><div class="small muted">Já vem marcado; dá para desmarcar em cada dia.</div></div></label>
@@ -483,7 +491,8 @@ function overlayView() {
         <div class="grid2" style="margin-top:10px"><label class="field"><span>Data</span><input type="date" id="ed-date" value="${L.dateOf(e.dateTime)}"></label>
           <label class="field"><span>Hora</span><input type="time" id="ed-time" value="${hmOf(e.dateTime)}"></label></div>
         ${e.photoId && e.ocrBox ? `<div class="label" style="margin-top:12px">Horário no comprovante</div><canvas class="crop" data-crop="${e.photoId}" data-box="${esc(e.ocrBox)}" data-act="photo" data-photo="${e.photoId}" style="margin-top:6px"></canvas>` : ''}
-        ${e.photoId ? `<img class="photo" data-photo-src="${e.photoId}" data-act="photo" data-photo="${e.photoId}" style="margin-top:10px" alt="Comprovante">` : ''}
+        ${e.photoId ? `<button class="btn outline block" style="margin-top:12px" data-act="markPhoto">Marcar na foto onde estão a hora e a data</button>
+        <img class="photo" data-photo-src="${e.photoId}" data-act="photo" data-photo="${e.photoId}" style="margin-top:10px" alt="Comprovante">` : ''}
         <button class="btn block" style="margin-top:16px;height:54px" data-act="savePunch">Salvar</button>`);
     }
     case 'mark': {
@@ -564,6 +573,15 @@ function overlayView() {
         <label class="field" style="margin-top:10px"><span>Data</span><input type="date" id="hol-date" value="${t}"></label>
         <label class="check"><input type="checkbox" id="hol-yearly" checked><div>Repete todo ano</div></label>
         <button class="btn block" style="margin-top:10px" data-act="saveHoliday">Salvar</button>`);
+    case 'markPhoto': {
+      const step = o.step;
+      return `<div class="viewer mark"><div class="mark-top"><b>${step === 0 ? 'Arraste o dedo sobre a HORA do ponto' : 'Agora sobre a DATA (ou pule)'}</b>
+        <div class="xs" style="opacity:.75">Só esse pedaço é lido. O app guarda a posição para achar sozinho nos próximos comprovantes.</div></div>
+        <div class="mark-area"><img id="mark-img" data-photo-src="${o.back.entry.photoId}" alt="Comprovante"><canvas id="mark-cv"></canvas></div>
+        <div class="row mark-bar"><button class="link" style="color:#fff" data-act="markCancel">Cancelar</button><div class="grow"></div>
+        ${step === 0 ? `<button class="btn outline" data-act="markRedo" ${o.time ? '' : 'disabled'}>Refazer</button><button class="btn" data-act="markNext" ${o.time ? '' : 'disabled'}>Próximo</button>`
+          : `<button class="btn outline" data-act="markRead" data-skip="1">Pular data</button><button class="btn" data-act="markRead" ${o.date ? '' : 'disabled'}>Ler</button>`}</div></div>`;
+    }
     case 'photo': return `<div class="viewer"><img data-photo-src="${o.photoId}" data-act="zoom" alt="Comprovante"><button class="icon-btn close" data-act="close">${icon('x')}</button></div>`;
     default: return '';
   }
@@ -627,6 +645,7 @@ function renderOverlay() {
   $ov.innerHTML = overlayView();
   hydrateImages($ov);
   if (ui.overlay?.kind === 'goal') goalPreview();
+  if (ui.overlay?.kind === 'markPhoto') setupMark();
 }
 function render() { renderApp(); renderOverlay(); }
 
@@ -704,14 +723,18 @@ async function handlePhoto(file) {
   ui.photoDate = null;
   loading('Lendo o comprovante...');
   let res = null;
-  try { res = await readReceipt(file, loading); } catch (e) { console.error(e); }
-  // Sem leitura não há como tarjar: nesse caso a foto não é guardada.
-  const photoBlob = data.settings.keepPhotos === false ? null : res?.photoBlob;
-  const photoId = photoBlob ? await S.putPhoto(photoBlob) : null;
-  loading(null);
+  try { res = await readReceipt(file, loading, data.settings.layout || null); } catch (e) { console.error(e); }
   const r = res?.receipt || {};
   if (!r.date && fallbackDate && r.time !== null && r.time !== undefined) r.date = fallbackDate;
-  if (r.date && r.time !== null && r.time !== undefined) {
+  const readOk = !!(r.date && r.time !== null && r.time !== undefined);
+  const review = !readOk || res?.uncertain;
+  // Sem leitura não há como tarjar: nesse caso a foto não é guardada.
+  // Sem "guardar foto", a foto tarjada fica só até conferir (para poder marcar na foto).
+  const temp = data.settings.keepPhotos === false;
+  const photoBlob = temp && !review ? null : res?.photoBlob;
+  const photoId = photoBlob ? await S.putPhoto(photoBlob) : null;
+  loading(null);
+  if (readOk && !res?.uncertain) {
     const dt = L.makeDT(r.date, r.time);
     const otherDay = fallbackDate && fallbackDate !== r.date ? `O comprovante é de ${dm(r.date)}, não do dia escolhido: salvei na data do comprovante.` : null;
     if (r.nsr && data.punches.some((p) => p.nsr === r.nsr && p.dateTime === dt)) {
@@ -722,6 +745,7 @@ async function handlePhoto(file) {
     const entry = { id: S.newId(), dateTime: dt, type: L.suggestType(byDate()[r.date]), source: 'PHOTO', note: null,
       nsr: r.nsr || null, ocrBox: res.box, photoId };
     data.punches.push(entry);
+    if (res.lines?.length) linesById.set(entry.id, res.lines);
     const warn = checkProfile(r.employeeName);
     data.lastReadId = entry.id;
     save(); ui.tab = 'hoje'; render();
@@ -731,10 +755,49 @@ async function handlePhoto(file) {
     });
   } else {
     const d = newDraft(r.date || fallbackDate || today(), 'PHOTO');
-    d.photoId = photoId; d.nsr = r.nsr || null;
-    openOverlay({ kind: 'edit', entry: d, type: d.type, message: res ? 'Não consegui ler a data e a hora da foto. Confira e salve.'
-      : 'Não consegui usar o leitor de texto (na primeira vez é preciso internet). Digite o horário.' });
+    if (readOk) d.dateTime = L.makeDT(r.date, r.time);
+    d.photoId = photoId; d.nsr = r.nsr || null; d.tempPhoto = temp && !!photoId; d.ocrBox = res?.box || null;
+    ui.draftLines = res?.lines || [];
+    openOverlay({ kind: 'edit', entry: d, type: d.type, message: !res ? 'Não consegui usar o leitor de texto (na primeira vez é preciso internet). Digite o horário.'
+      : readOk ? 'Confira o horário: ele está num lugar diferente do que costuma estar nos seus comprovantes.'
+      : 'Não consegui ler a data e a hora. Confira, ou toque em "Marcar na foto" para mostrar onde elas ficam.' });
   }
+}
+
+// ---------- assistente de leitura ----------
+const linesById = new Map(); // só em memória
+function learn(lines, entry, corrected) {
+  const m = ui.marked || {};
+  data.settings.layout = L.learnLayout(data.settings.layout, lines || [], L.minutesOf(entry.dateTime), L.dateOf(entry.dateTime), corrected, m.time || null, m.date || null);
+  ui.marked = null;
+}
+
+/** Desenho do retângulo na tela "Marcar na foto" (frações da imagem). */
+function setupMark() {
+  const img = document.getElementById('mark-img'), cv = document.getElementById('mark-cv');
+  if (!img || !cv) return;
+  const o = ui.overlay;
+  const rectOf = () => img.getBoundingClientRect();
+  const draw = (cur) => {
+    const r = rectOf(); cv.width = r.width; cv.height = r.height;
+    cv.style.left = `${img.offsetLeft}px`; cv.style.top = `${img.offsetTop}px`; cv.style.width = `${r.width}px`; cv.style.height = `${r.height}px`;
+    const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, cv.width, cv.height); ctx.lineWidth = 3;
+    const box = (b, color) => { if (!b) return; ctx.strokeStyle = color; ctx.strokeRect(b.l * r.width, b.t * r.height, (b.r - b.l) * r.width, (b.b - b.t) * r.height); };
+    box(o.time, '#C6F36B'); box(o.date, '#9D92FF'); box(cur, '#ffffff');
+  };
+  img.onload = () => draw(null);
+  if (img.complete) draw(null);
+  let start = null;
+  const pt = (ev) => { const r = rectOf(); return { x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) }; };
+  const toBox = (a, b) => ({ l: Math.min(a.x, b.x), t: Math.min(a.y, b.y), r: Math.max(a.x, b.x), b: Math.max(a.y, b.y) });
+  cv.onpointerdown = (ev) => { start = pt(ev); cv.setPointerCapture(ev.pointerId); ev.preventDefault(); };
+  cv.onpointermove = (ev) => { if (start) draw(toBox(start, pt(ev))); };
+  cv.onpointerup = (ev) => {
+    if (!start) return;
+    const b = toBox(start, pt(ev)); start = null;
+    if (b.r - b.l > 0.01 && b.b - b.t > 0.005) { if (o.step === 0) o.time = b; else o.date = b; }
+    renderOverlay();
+  };
 }
 
 function remSettings() {
@@ -863,7 +926,14 @@ const actions = {
     const o = ui.overlay;
     const date = document.getElementById('ed-date').value, time = document.getElementById('ed-time').value;
     if (!date || !/^\d{2}:\d{2}/.test(time)) { toast('Data ou hora inválida'); return; }
-    const entry = { ...o.entry, dateTime: `${date}T${time.slice(0, 5)}`, type: o.type };
+    let entry = { ...o.entry, dateTime: `${date}T${time.slice(0, 5)}`, type: o.type };
+    const old = findPunch(entry.id);
+    if (entry.source === 'PHOTO') {
+      if (!old && (ui.draftLines?.length || ui.marked)) learn(ui.draftLines, entry, true);
+      else if (old && (old.dateTime !== entry.dateTime || ui.marked) && (linesById.get(old.id) || ui.marked)) learn(linesById.get(old.id), entry, true);
+      ui.draftLines = null;
+    }
+    if (entry.tempPhoto) { S.deletePhoto(entry.photoId); entry = { ...entry, photoId: null, ocrBox: null, tempPhoto: false }; }
     const i = data.punches.findIndex((p) => p.id === entry.id);
     if (i >= 0) data.punches[i] = entry; else { data.punches.push(entry); checkProfile(entry); }
     if (data.lastReadId === entry.id) data.lastReadId = null;
@@ -876,7 +946,35 @@ const actions = {
     save(); ui.overlay = null; render();
     toast('Marcação excluída', { label: 'Desfazer', run: () => { data.punches.push(e); save(); render(); } });
   },
-  confirmRead: () => { data.lastReadId = null; save(); renderApp(); },
+  confirmRead: () => {
+    const p = findPunch(data.lastReadId);
+    if (p && linesById.get(p.id)) learn(linesById.get(p.id), p, false);
+    data.lastReadId = null; save(); renderApp();
+  },
+  markPhoto: () => {
+    const o = ui.overlay;
+    const date = document.getElementById('ed-date')?.value, time = document.getElementById('ed-time')?.value;
+    if (date && /^\d{2}:\d{2}/.test(time || '')) o.entry = { ...o.entry, dateTime: `${date}T${time.slice(0, 5)}` };
+    openOverlay({ kind: 'markPhoto', back: o, step: 0, time: null, date: null });
+  },
+  markNext: () => { ui.overlay.step = 1; renderOverlay(); },
+  markRedo: () => { const o = ui.overlay; if (o.step === 0) o.time = null; else o.date = null; renderOverlay(); },
+  markCancel: () => openOverlay(ui.overlay.back),
+  markRead: async (d) => {
+    const o = ui.overlay; const back = o.back;
+    const dateBox = d.skip ? null : o.date;
+    ui.marked = { time: o.time, date: dateBox };
+    loading('Lendo o pedaço marcado...');
+    let r = { time: null, date: null };
+    try { r = await readMarked(await S.getPhoto(back.entry.photoId), o.time, dateBox, loading); } catch (e) { console.error(e); }
+    loading(null);
+    const cur = back.entry.dateTime;
+    back.entry = { ...back.entry, dateTime: L.makeDT(r.date || L.dateOf(cur), r.time ?? L.minutesOf(cur)) };
+    back.message = r.time === null ? 'Não consegui ler a hora marcada. Ajuste no campo Hora; a posição fica guardada mesmo assim.'
+      : `Lido: ${L.hm(r.time)}${r.date ? ` · ${dm(r.date)}` : ''}. Confira e salve.`;
+    openOverlay(back);
+  },
+  resetLayout: () => { data.settings.layout = null; save(); renderApp(); toast('Padrão esquecido'); },
   photo: (d) => openOverlay({ kind: 'photo', photoId: d.photo }),
   zoom: (_, el) => el.classList.toggle('z'),
   markSheet: (d) => openOverlay({ kind: 'mark', date: d.date }),
@@ -995,6 +1093,23 @@ document.addEventListener('change', (ev) => {
   else if (kind === 'remTime') { remSettings().punchTimes[Number(el.dataset.i)] = el.value || '00:00'; save(); }
   else if (kind === 'custEven') { ui.overlay.custom.even = el.checked; renderOverlay(); }
 });
+// Lista de municípios (IBGE), carregada só quando o campo de cidade é usado.
+let citiesByUf = null;
+async function fillCities() {
+  const list = document.getElementById('loc-cities'); if (!list) return;
+  if (!citiesByUf) {
+    try {
+      const txt = await (await fetch('data/cidades.txt')).text();
+      citiesByUf = Object.fromEntries(txt.split('\n').filter((l) => l.includes('|')).map((l) => { const [uf, names] = l.split('|'); return [uf, names.split(';')]; }));
+    } catch (e) { return; }
+  }
+  const uf = document.getElementById('loc-uf')?.value;
+  const names = uf ? citiesByUf[uf] || [] : Object.values(citiesByUf).flat();
+  list.innerHTML = names.slice(0, 900).map((n) => `<option value="${esc(n)}">`).join('');
+}
+document.addEventListener('focusin', (ev) => { if (ev.target.id === 'loc-city') fillCities(); });
+document.addEventListener('change', (ev) => { if (ev.target.id === 'loc-uf') fillCities(); });
+
 document.addEventListener('input', (ev) => { if (ev.target.dataset?.input === 'goalPreview') goalPreview(); });
 
 function updateEspButton() {
@@ -1016,7 +1131,10 @@ bindFile('in-esp-camera', handleEspelho);
 bindFile('in-esp-files', handleEspelho);
 bindFile('in-backup', async (f) => {
   try {
-    const added = S.mergeBackup(data, JSON.parse(await f[0].text()));
+    if (f[0].size > 5 * 1024 * 1024) throw new Error('grande demais');
+    const b = JSON.parse(await f[0].text());
+    L.validateBackup(b);
+    const added = S.mergeBackup(data, b);
     save(); render(); toast(`Backup restaurado (${added} marcações novas)`);
   } catch (e) { toast('Arquivo de backup inválido'); }
 });

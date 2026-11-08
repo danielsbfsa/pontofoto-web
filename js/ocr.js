@@ -1,6 +1,6 @@
 // Leitura das fotos (Tesseract.js) e dos PDFs (pdf.js), tudo no próprio aparelho.
 // As bibliotecas ficam em ./vendor (o GitHub as inclui na publicação).
-import { parseReceipt, vote, parseEspelho, personalWords, isSensitiveLine, isBareLabel } from './logic.js';
+import { parseReceipt, vote, parseEspelho, personalWords, isSensitiveLine, isBareLabel, guidedRead, isTrained, timesIn, datesIn, textArea, toAbsolute } from './logic.js';
 
 const VENDOR = new URL('../vendor/', import.meta.url).href;
 
@@ -173,7 +173,7 @@ function redact(canvas, boxes) {
  * Lê o comprovante em 3 versões (foto, recorte realçado, preto e branco) e vota no horário,
  * dando mais peso ao que veio do rótulo "HORA:".
  */
-export async function readReceipt(file, onStatus) {
+export async function readReceipt(file, onStatus, profile = null) {
   const canvas = await fileToCanvas(file, 2400);
   const worker = await getWorker(onStatus);
   const W = canvas.width, H = canvas.height;
@@ -191,8 +191,27 @@ export async function readReceipt(file, onStatus) {
   passes.push({ data: (await worker.recognize(binarize(enh))).data, weight: 1.1, toOrig: back });
 
   const cands = passes.flatMap((p) => [...new Set([p.data.text || '', geometricText(p.data)])].map((t) => ({ r: parseReceipt(t), w: p.weight })));
-  const time = vote(cands.map((c) => ({ value: c.r.time ?? null, weight: c.w * (c.r.timeLabeled ? 2 : 1) })));
-  const date = vote(cands.map((c) => ({ value: c.r.date ?? null, weight: c.w * (c.r.dateLabeled ? 2 : 1) })));
+  const tv = cands.map((c) => ({ value: c.r.time ?? null, weight: c.w * (c.r.timeLabeled ? 2 : 1) }));
+  const dv = cands.map((c) => ({ value: c.r.date ?? null, weight: c.w * (c.r.dateLabeled ? 2 : 1) }));
+  const plainTime = vote(tv);
+  // Assistente: procura primeiro onde a hora e a data costumam estar no comprovante deste usuário.
+  const best = [...passes].sort((a, b) => b.weight - a.weight)[0];
+  const lines = linesOf(best.data).map((l) => { const r = best.toOrig(l.bbox); return { text: l.text.trim(), box: { l: r.x0, t: r.y0, r: r.x1, b: r.y1 } }; });
+  let g = profile && (profile.time || profile.date) ? guidedRead(profile, lines) : null;
+  if (profile?.time?.manual && g && g.time === null) {
+    const area = textArea(lines);
+    if (area) {
+      const abs = toAbsolute(profile.time.box, area);
+      const r = await readAreaCanvas(canvas, abs, worker);
+      if (r.time !== null) g = { ...g, time: r.time, timeScore: 1.5, date: g.date ?? r.date, dateScore: g.date ? g.dateScore : (r.date ? 1 : 0) };
+    }
+  }
+  const k = isTrained(profile) ? 1.5 : 0.6;
+  if (g?.time !== null && g?.time !== undefined) tv.push({ value: g.time, weight: 3 * g.timeScore * k });
+  if (g?.date) dv.push({ value: g.date, weight: 3 * g.dateScore * k });
+  const time = vote(tv);
+  const date = vote(dv);
+  const uncertain = isTrained(profile) && g?.time != null && plainTime !== null && g.time !== plainTime;
   const receipt = {
     time, date,
     nsr: vote(cands.map((c) => ({ value: c.r.nsr ?? null, weight: c.w }))),
@@ -206,7 +225,30 @@ export async function readReceipt(file, onStatus) {
   // Privacidade: a foto só é guardada com CPF, nome, empresa e endereço cobertos por tarja.
   redact(canvas, passes.flatMap((p) => sensitiveBoxes(p, personalWords(receipt), time)));
   const photoBlob = await canvasToBlob(canvas);
-  return { receipt, box: box ? box.map((v) => v.toFixed(4)).join(',') : null, photoBlob };
+  return { receipt, box: box ? box.map((v) => v.toFixed(4)).join(',') : null, photoBlob, lines, uncertain };
+}
+
+/** Lê só um pedaço do canvas ([b] em frações), ampliado. */
+async function readAreaCanvas(canvas, b, worker) {
+  const W = canvas.width, H = canvas.height;
+  const padY = (b.b - b.t) * H * 0.35, padX = (b.r - b.l) * W * 0.08;
+  const x = Math.max(0, b.l * W - padX), y = Math.max(0, b.t * H - padY);
+  const w = Math.min(W - x, (b.r - b.l) * W + 2 * padX), h = Math.min(H - y, (b.b - b.t) * H + 2 * padY);
+  if (w < 8 || h < 8) return { time: null, date: null };
+  const { canvas: enh } = enhance(canvas, { x, y, w, h }, 1400);
+  const texts = [(await worker.recognize(enh)).data.text || '', (await worker.recognize(binarize(enh))).data.text || ''];
+  const pick = (arr) => { const c = new Map(); arr.forEach((v) => c.set(v, (c.get(v) || 0) + 1)); let bv = null, bn = 0; for (const [v, n] of c) if (n > bn) { bv = v; bn = n; } return bv; };
+  return { time: pick(texts.flatMap((t) => timesIn(t.replace(/\n/g, ' ')))), date: pick(texts.flatMap((t) => datesIn(t.replace(/\n/g, ' ')))) };
+}
+
+/** Marcação manual: lê os pedaços que o usuário marcou na foto guardada (já tarjada). */
+export async function readMarked(photoBlob, timeBox, dateBox, onStatus) {
+  const canvas = await fileToCanvas(photoBlob, 2400);
+  const worker = await getWorker(onStatus);
+  onStatus?.('Lendo o pedaço marcado...');
+  const t = timeBox ? await readAreaCanvas(canvas, timeBox, worker) : { time: null };
+  const d = dateBox ? await readAreaCanvas(canvas, dateBox, worker) : { date: null };
+  return { time: t.time, date: d.date };
 }
 
 // ---------------- espelho de ponto ----------------
