@@ -1,7 +1,8 @@
 // Ponto Foto (web/iPhone): telas e fluxos. Mesmas regras do app Android (logic.js).
 import * as L from './logic.js';
 import * as S from './store.js';
-import { readReceipt, readEspelho, readMarked, fileToCanvas, canvasToBlob } from './ocr.js';
+import { readReceipt, readEspelho, readMarked, readText, fileToCanvas, canvasToBlob } from './ocr.js';
+import * as ESC from './escala.js';
 import * as P from './plans.js';
 
 const $app = document.getElementById('app');
@@ -25,8 +26,8 @@ function hmap() {
 const holidaySettings = () => ({ uf: data.settings.uf, city: data.settings.city, customHolidays: data.settings.customHolidays || [],
   disabledHolidays: data.settings.disabledHolidays || [], includeOptional: !!data.settings.includeOptional,
   confirmedHolidays: data.settings.confirmedHolidays || [] });
-const cfg = () => ({ weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch,
-  holidays: new Set(Object.keys(hmap())), autoDouble: data.settings.autoDouble !== false });
+const cfg = () => L.applyAppointments({ weekly: data.settings.weekly, tolerance: data.settings.tolerance, lunch: data.settings.lunch,
+  holidays: new Set(Object.keys(hmap())), autoDouble: data.settings.autoDouble !== false }, data.appointments || []);
 const strategy = () => data.settings.strategy || { even: true, sat: 0, sun: 0, alt: 0 };
 const nowDT = () => L.localNow();
 const today = () => L.dateOf(nowDT());
@@ -155,6 +156,7 @@ function homeView() {
     <div class="row"><div class="grow"><div class="muted">${greeting(now)}${name ? `, ${esc(name)}` : ''}</div>
       <div class="h2">${longLabel(t)}</div></div>
       <button class="avatar" data-act="tab" data-tab="ajustes">${esc(initials(data.settings.name || 'Ponto Foto'))}</button></div>
+    ${(() => { const a = L.upcomingAppointments(data.appointments, now, 1)[0]; return a ? `<div class="card tight row tap" data-act="appt" data-id="${a.id}">${icon('calendar', 'color:var(--primary);flex:none')}<div class="grow"><b>${a.date === t ? 'Hoje' : 'Amanhã'}: ${esc(a.title || L.APPT_KINDS[a.kind])}</b><div class="small muted">${esc(L.describeAppointment(a))}</div></div></div>` : ''; })()}
 
     ${missing ? `<div class="card tight row tap" data-act="day" data-date="${missing.date}" style="background:color-mix(in srgb, var(--negative) 14%, var(--surface))">${icon('info', 'color:var(--negative);flex:none')}
       <div class="small grow"><b>Esqueceu algum ponto?</b> ${esc(missing.text)}</div>${icon('right', 'color:var(--muted)')}</div>` : ''}
@@ -346,6 +348,7 @@ function bankView() {
         <div class="small muted">Esses dias ficam fora do banco até você corrigir no Histórico (para não gerar saldo negativo falso):</div>
         <div class="chips" style="margin-top:8px">${inc.slice(0, 10).map((x) => `<button class="chip" data-act="day" data-date="${x.date}">${dm(x.date)} · ${x.punches.length} batida${x.punches.length === 1 ? '' : 's'}</button>`).join('')}</div></div>` : '';
     })()}
+    ${payCard()}
     <div class="card"><div class="h3" style="margin-bottom:12px">Últimos 7 dias</div>${chart(last7)}</div>
     <div class="h3">Este mês</div>
     <div class="grid2">
@@ -377,7 +380,8 @@ function agendaView() {
     <div class="small muted">${dm(h.date)} (${h.weekday}) · ${h.inDays === 0 ? 'hoje' : h.inDays === 1 ? 'amanhã' : `em ${h.inDays} dias`}${h.bridge ? ` · emende ${dm(h.bridge)} (${dur(h.bridgeMinutes)} do banco)` : ''}</div></div>${kindPill(h.kind)}</div>`;
   const m = MONTHS[Number(t.slice(5, 7)) - 1];
   return `<div class="stack">
-    <div><div class="muted">Feriados, emendas e planos</div><div class="h1">Agenda</div></div>
+    <div><div class="muted">Consultas, faltas, feriados e emendas</div><div class="h1">Agenda</div></div>
+    ${apptCard()}
     ${!st.uf ? `<div class="card tap row" data-act="tab" data-tab="ajustes">${icon('info', 'color:var(--primary);flex:none')}<div class="grow"><div class="h3">Informe seu estado e cidade</div><div class="small muted">Para incluir os feriados estaduais e municipais. Toque para abrir os Ajustes.</div></div></div>`
       : !P.cityKnown(st.uf, st.city) ? `<div class="notice" style="background:color-mix(in srgb, var(--saida) 14%, transparent)">Ainda não tenho os feriados municipais de ${esc(st.city || 'sua cidade')}. Se a sua empresa folga neles, adicione em "Feriados do ano" (botão +).</div>` : ''}
     <div class="card"><div class="label">Este mês</div><div class="h2">${m[0].toUpperCase() + m.slice(1)}</div>
@@ -413,6 +417,9 @@ function settingsView() {
       <div><div class="h3">Perfil</div><div class="small muted">Só o primeiro nome, opcional.</div></div></div>
       <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="pf-name" value="${esc(st.name)}" style="font-size:16px"></label>
       <div style="text-align:right"><button class="link" data-act="saveProfile">Salvar</button></div></div>
+    <div class="card"><div class="h3">Como você trabalha</div><div class="small muted">Escolha o que aparece no app.</div>
+      <div class="chips" style="margin-top:8px">${[['CLT', 'Carteira assinada (ponto)'], ['APPS', 'Apps de corrida/entrega'], ['AMBOS', 'Os dois']].map(([k, l]) => `<button class="chip ${(st.workMode || 'CLT') === k ? 'on' : ''}" data-act="workMode" data-v="${k}">${l}</button>`).join('')}</div></div>
+    <div class="card"><div class="h3">Escala do trabalho</div><div class="small muted">Recebeu um link de escala do patrão? Abra o link no celular e o app ajusta jornada, folgas e lembretes. Organiza uma equipe? <a class="link" href="escalas.html">Monte a escala aqui</a>.</div></div>
     <div class="card"><div class="h3">Assistente de leitura</div>
       <div class="small" style="margin-top:4px">${st.layout?.time?.manual ? 'Aprendeu onde ficam a hora no seu comprovante (você marcou na foto).'
         : L.isTrained(st.layout) ? 'Já conhece o seu modelo de comprovante: procura a hora no mesmo lugar de sempre.'
@@ -449,7 +456,7 @@ function settingsView() {
     <div class="card"><div class="h3">Lembretes no iPhone</div>
       <div class="small muted" style="margin-top:4px">O iPhone não deixa apps instalados pelo navegador agendarem notificações. Por isso os lembretes vão para o <b>Calendário</b>, com alarme: gere o arquivo, toque nele e escolha <b>Adicionar todos</b>. Esquecimentos de ponto aparecem aqui no app.</div>
       <label class="check"><input type="checkbox" data-change="rem" data-k="punch" ${rem.punch ? 'checked' : ''}><div><b>Antes de bater o ponto</b> (dias de trabalho)</div></label>
-      ${rem.punch ? `<div class="row" style="flex-wrap:wrap;gap:8px">${rem.punchTimes.map((tm, i) => `<label class="field" style="width:96px;padding:6px 10px"><span>${['Entrada', 'Almoço', 'Volta', 'Saída'][i] || 'Ponto'}</span><input type="time" value="${tm}" data-change="remTime" data-i="${i}" style="font-size:16px"></label>`).join('')}</div>
+      ${rem.punch ? `<div class="row" style="flex-wrap:wrap;gap:8px">${rem.punchTimes.map((tm, i) => `<label class="field" style="width:96px;padding:6px 10px"><span>${(rem.punchTimes.length === 2 ? ['Entrada', 'Saída'] : ['Entrada', 'Almoço', 'Volta', 'Saída'])[i] || 'Ponto'}</span><input type="time" value="${tm}" data-change="remTime" data-i="${i}" style="font-size:16px"></label>`).join('')}</div>
         <div class="chips" style="margin-top:8px">${[5, 10, 15, 30].map((v) => `<button class="chip ${rem.punchLead === v ? 'on' : ''}" data-act="remLead" data-v="${v}">${v} min antes</button>`).join('')}</div>` : ''}
       <label class="check"><input type="checkbox" data-change="rem" data-k="holidays" ${rem.holidays ? 'checked' : ''}><div><b>Feriados</b> (aviso antecipado e na véspera)</div></label>
       ${rem.holidays ? `<div class="chips">${[1, 7, 15, 30].map((v) => `<button class="chip ${rem.holidayDaysBefore === v ? 'on' : ''}" data-act="remHolDays" data-v="${v}">${v} dia(s) antes</button>`).join('')}</div>` : ''}
@@ -459,7 +466,7 @@ function settingsView() {
     <div class="card"><div class="h3">Backup</div><div class="small muted">Mesmo formato do app Android: dá para levar os dados de um para o outro.</div>
       <div class="grid2" style="margin-top:12px"><button class="btn outline" data-act="exportBackup">Exportar</button><button class="btn outline" data-act="importBackup">Importar</button></div></div>
     <div class="card"><div class="h3">Instalar no iPhone</div><div class="small muted" style="margin-top:4px">No Safari, toque em <b>Compartilhar</b> (quadrado com seta) → <b>Adicionar à Tela de Início</b>. O app abre em tela cheia e funciona sem internet. Na primeira leitura de foto ele baixa o leitor de texto (alguns MB).</div></div>
-    <div class="center xs muted">Ponto Foto web 1.4 · seus dados ficam só neste aparelho.<br>Controle pessoal: não substitui o registro oficial de ponto (Portaria MTE 671/2021).</div>
+    <div class="center xs muted">Ponto Foto web 1.5 · seus dados ficam só neste aparelho.<br>Controle pessoal: não substitui o registro oficial de ponto (Portaria MTE 671/2021).</div>
   </div>`;
 }
 
@@ -494,6 +501,72 @@ function overlayView() {
         ${e.photoId ? `<button class="btn outline block" style="margin-top:12px" data-act="markPhoto">Marcar na foto onde estão a hora e a data</button>
         <img class="photo" data-photo-src="${e.photoId}" data-act="photo" data-photo="${e.photoId}" style="margin-top:10px" alt="Comprovante">` : ''}
         <button class="btn block" style="margin-top:16px;height:54px" data-act="savePunch">Salvar</button>`);
+    }
+    case 'appt': {
+      const a = o.a, allDay = !a.start;
+      const chips = (obj, key, act) => Object.entries(obj).map(([k, l]) => `<button class="chip ${a[key] === k ? 'on' : ''}" data-act="${act}" data-v="${k}">${l}</button>`).join('');
+      return sheet(`<div class="row"><div class="h2 grow">${o.isNew ? 'Agendar' : 'Editar compromisso'}</div>${o.isNew ? '' : `<button class="icon-btn" data-act="apptDel" style="color:var(--negative)">${icon('trash')}</button>`}</div>
+        <div class="chips" style="margin-top:10px">${chips(L.APPT_KINDS, 'kind', 'apptKind')}</div>
+        <label class="field" style="margin-top:10px"><span>Descrição (opcional)</span><input id="ap-title" maxlength="60" value="${esc(a.title || '')}" placeholder="Ex.: Dentista" style="font-size:16px"></label>
+        <div class="grid2" style="margin-top:10px"><label class="field"><span>Data</span><input type="date" id="ap-date" value="${a.date}"></label>
+          <label class="check" style="align-self:center"><input type="checkbox" id="ap-allday" ${allDay ? 'checked' : ''} data-change="apAllDay"><div>Dia inteiro</div></label></div>
+        ${allDay ? '' : `<div class="grid2" style="margin-top:10px"><label class="field"><span>Início</span><input type="time" id="ap-start" value="${a.start}"></label><label class="field"><span>Fim</span><input type="time" id="ap-end" value="${a.end}"></label></div>
+        <div class="label" style="margin-top:10px">Deslocamento</div><div class="chips">${[0, 15, 30, 45, 60, 90].map((m) => `<button class="chip ${(a.travel || 0) === m ? 'on' : ''}" data-act="apTravel" data-v="${m}">${m ? m + ' min' : 'Nenhum'}</button>`).join('')}</div>`}
+        <div class="label" style="margin-top:10px">No banco de horas</div><div class="chips">${chips(L.APPT_TREATMENTS, 'treatment', 'apTreat')}</div>
+        <div class="xs muted" style="margin-top:4px">${a.treatment === 'ABONADA' ? 'Com atestado ou declaração: o horário não é cobrado.' : a.treatment === 'BANCO' ? 'As horas fora saem do banco (ou viram falta, se for o dia todo).' : 'Não mexe no banco de horas.'}</div>
+        <div class="label" style="margin-top:10px">Lembrete (entra no arquivo do Calendário)</div><div class="chips">${(allDay ? [[-1, 'Não avisar'], [0, 'Na véspera']] : [[-1, 'Não avisar'], [15, '15 min'], [30, '30 min'], [60, '1 h'], [120, '2 h'], [1440, '1 dia']]).map(([v, l]) => `<button class="chip ${(allDay ? (a.remind >= 0) === (v >= 0) : a.remind === v) ? 'on' : ''}" data-act="apRemind" data-v="${v}">${l}</button>`).join('')}</div>
+        ${!allDay && a.treatment === 'ABONADA' ? `<label class="check"><input type="checkbox" id="ap-doc" ${a.doc !== false ? 'checked' : ''}><div>Lembrar de pedir a declaração de comparecimento</div></label>` : ''}
+        <button class="btn block" style="margin-top:14px;height:54px" data-act="apSave">Salvar</button>`);
+    }
+    case 'pay': {
+      const p = data.settings.pay || {};
+      const chip = (k, v, l) => `<button class="chip ${(p[k] ?? ui.payDefaults[k]) === v ? 'on' : ''}" data-act="payChip" data-k="${k}" data-v="${v}">${l}</button>`;
+      return sheet(`<div class="h2">Valor das horas</div><div class="small muted">Fica só neste aparelho.</div>
+        <div class="grid2" style="margin-top:10px"><label class="field"><span>Salário (R$)</span><input id="pay-salary" inputmode="decimal" value="${p.salary ? String(p.salary).replace('.', ',') : ''}" style="font-size:16px"></label>
+          <label class="field"><span>Ou valor da hora (R$)</span><input id="pay-hourly" inputmode="decimal" value="${p.hourly ? String(p.hourly).replace('.', ',') : ''}" style="font-size:16px"></label></div>
+        <div class="label" style="margin-top:10px">Horas por mês</div><div class="chips">${[[220, '220 h'], [200, '200 h'], [180, '180 h'], [150, '150 h']].map(([v, l]) => chip('hours', v, l)).join('')}</div>
+        <div class="label" style="margin-top:10px">Hora extra</div><div class="chips">${[50, 60, 70, 75, 100].map((v) => chip('extraPct', v, v + '%')).join('')}</div>
+        <div class="label" style="margin-top:10px">Domingos e feriados</div><div class="chips">${[100, 150].map((v) => chip('holidayPct', v, v + '%')).join('')}</div>
+        <div class="label" style="margin-top:10px">Adicional noturno (22h às 5h)</div><div class="chips">${[0, 20, 25, 30, 50].map((v) => chip('nightPct', v, v ? v + '%' : 'Não tenho')).join('')}</div>
+        <label class="check"><input type="checkbox" id="pay-reduced" ${p.nightReduced !== false ? 'checked' : ''}><div>Hora noturna reduzida (52min30s)</div></label>
+        <label class="check"><input type="checkbox" id="pay-bank" ${p.toBank !== false ? 'checked' : ''}><div>Minhas extras vão para o banco</div></label>
+        <button class="btn block" style="margin-top:12px;height:54px" data-act="paySave">Salvar</button>`);
+    }
+    case 'gig': {
+      const s = o.s;
+      const f = (id, l, v, mode = 'decimal') => `<label class="field"><span>${l}</span><input id="${id}" inputmode="${mode}" value="${v}" style="font-size:16px"></label>`;
+      const n = (v) => (v ? String(v).replace('.', ',') : '');
+      return sheet(`<div class="row"><div class="h2 grow">${o.isNew ? 'Lançar turno' : 'Editar turno'}</div>${o.isNew ? '' : `<button class="icon-btn" data-act="gigDel" style="color:var(--negative)">${icon('trash')}</button>`}</div>
+        <div class="chips" style="margin-top:10px">${L.GIG_PLATFORMS.map((p) => `<button class="chip ${s.platform === p ? 'on' : ''}" data-act="gigSetPlat" data-v="${p}">${p}</button>`).join('')}</div>
+        <label class="field" style="margin-top:10px"><span>Data</span><input type="date" id="g-date" value="${s.date}"></label>
+        <div class="grid2" style="margin-top:10px">${f('g-earn', 'Ganhos R$', n(s.earnings))}${f('g-tips', 'Gorjetas R$', n(s.tips))}${f('g-online', 'Online (h:mm)', s.online ? `${Math.floor(s.online / 60)}:${String(s.online % 60).padStart(2, '0')}` : '', 'text')}${f('g-trips', 'Corridas', s.trips || '', 'numeric')}${f('g-km', 'Km rodados', n(s.km))}${f('g-exp', 'Gastos R$', n(s.expenses))}</div>
+        <div class="xs muted" style="margin-top:6px">Gastos em branco: o app estima o combustível pelos km.</div>
+        <button class="btn block" style="margin-top:12px;height:54px" data-act="gigSave">Salvar</button>`);
+    }
+    case 'gigCosts': {
+      const c = data.settings.gigCosts || {};
+      const v = (x) => (x ? String(x).replace('.', ',') : '');
+      return sheet(`<div class="h2">Custos e meta</div>
+        <label class="field" style="margin-top:10px"><span>Consumo (km por litro)</span><input id="gc-kml" inputmode="decimal" value="${v(c.kmPerLiter)}" style="font-size:16px"></label>
+        <label class="field" style="margin-top:10px"><span>Combustível (R$/litro)</span><input id="gc-price" inputmode="decimal" value="${v(c.fuelPrice)}" style="font-size:16px"></label>
+        <label class="field" style="margin-top:10px"><span>Meta líquida na semana (R$)</span><input id="gc-goal" inputmode="decimal" value="${v(c.goal)}" style="font-size:16px"></label>
+        <button class="btn block" style="margin-top:12px;height:54px" data-act="gigCostsSave">Salvar</button>`);
+    }
+    case 'escala': {
+      const sc = o.schedule, set = ESC.toEmployeeSettings(sc.days);
+      const work = sc.days.filter((d) => d.shift);
+      const first = work[0]?.shift;
+      return sheet(`<div class="h2">Escala recebida</div>
+        <div class="muted" style="margin-top:4px">${esc(sc.name)}${sc.place ? ` · ${esc(sc.place)}` : ''} · de ${dm(sc.days[0].date)} a ${dm(sc.days[sc.days.length - 1].date)}</div>
+        <div class="card tight" style="margin-top:12px;background:var(--surface-2)">
+          <div>${work.length} dias de trabalho${first ? `, das ${esc(first.start)} às ${esc(first.end)} (${first.break} min de intervalo)` : ''}.</div>
+          <div class="small muted" style="margin-top:6px">Folgas em dias que normalmente são de trabalho: ${set.folgas.length ? set.folgas.map(dm).join(', ') : 'nenhuma'}.</div>
+        </div>
+        <div class="small" style="margin-top:12px">Ao importar, o app ajusta a jornada de cada dia da semana, marca as folgas da escala e os horários dos lembretes de ponto. Os seus pontos não mudam.</div>
+        <div class="xs muted" style="margin-top:6px">A escala é só planejamento do seu empregador; não é registro de ponto.</div>
+        ${/Android/i.test(navigator.userAgent) ? `<a class="btn tonal block" style="margin-top:16px;text-decoration:none" href="intent://escala/${o.code}#Intent;scheme=pontofoto;package=com.pontofoto.app;end">Tenho o app Android: abrir nele</a>` : ''}
+        <button class="btn block" style="margin-top:12px;height:54px" data-act="importSchedule">Importar escala aqui</button>
+        <button class="btn outline block" style="margin-top:8px" data-act="close">Agora não</button>`);
     }
     case 'mark': {
       const cur = data.marks[o.date]?.type || '';
@@ -632,12 +705,15 @@ function espReviewView(o) {
 // ---------------- render ----------------
 
 function tabbar() {
-  const tabs = [['hoje', 'Hoje', 'home'], ['historico', 'Histórico', 'calendar'], ['banco', 'Banco', 'wallet'], ['agenda', 'Agenda', 'flag'], ['ajustes', 'Ajustes', 'sliders']];
+  const mode = data.settings.workMode || 'CLT';
+  const tabs = mode === 'APPS' ? [['corridas', 'Corridas', 'wallet'], ['agenda', 'Agenda', 'flag'], ['ajustes', 'Ajustes', 'sliders']]
+    : mode === 'AMBOS' ? [['hoje', 'Hoje', 'home'], ['historico', 'Histórico', 'calendar'], ['banco', 'Banco', 'wallet'], ['corridas', 'Corridas', 'flag'], ['ajustes', 'Ajustes', 'sliders']]
+    : [['hoje', 'Hoje', 'home'], ['historico', 'Histórico', 'calendar'], ['banco', 'Banco', 'wallet'], ['agenda', 'Agenda', 'flag'], ['ajustes', 'Ajustes', 'sliders']];
   return `<nav class="tabbar"><div class="in">${tabs.map(([k, l, ic]) => `<button class="tab ${ui.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span class="ic">${icon(ic)}</span>${l}</button>`).join('')}</div></nav>`;
 }
 
 function renderApp() {
-  const views = { hoje: homeView, historico: historyView, banco: bankView, agenda: agendaView, ajustes: settingsView };
+  const views = { hoje: homeView, historico: historyView, banco: bankView, agenda: agendaView, ajustes: settingsView, corridas: gigView };
   $app.innerHTML = views[ui.tab]() + tabbar();
   hydrateImages($app);
 }
@@ -800,6 +876,100 @@ function setupMark() {
   };
 }
 
+/** Link de escala enviado pelo patrão (Ponto Foto Escalas): tudo vem no próprio link, sem servidor. */
+function checkScheduleLink() {
+  const m = /^#escala=([A-Za-z0-9_-]{10,6000})$/.exec(location.hash || '');
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try { openOverlay({ kind: 'escala', schedule: ESC.decodeSchedule(m[1]), code: m[1] }); }
+  catch (e) { toast('Link de escala inválido'); }
+}
+window.addEventListener('hashchange', checkScheduleLink);
+
+// leitura dos formulários abertos
+function readAppt() {
+  const a = ui.overlay.a;
+  const g = (id) => document.getElementById(id);
+  if (g('ap-title')) a.title = g('ap-title').value.trim().slice(0, 60);
+  if (g('ap-date')) a.date = g('ap-date').value;
+  if (g('ap-start') && a.start) { a.start = g('ap-start').value || a.start; a.end = g('ap-end').value || a.end; }
+  if (g('ap-doc')) a.doc = g('ap-doc').checked;
+  return a;
+}
+function readPay() {
+  const p = data.settings.pay = data.settings.pay || {};
+  const v = (id) => Number(String(document.getElementById(id)?.value || '').replace(/\./g, '').replace(',', '.')) || 0;
+  if (document.getElementById('pay-salary')) { p.salary = v('pay-salary'); p.hourly = v('pay-hourly'); }
+  if (document.getElementById('pay-reduced')) { p.nightReduced = document.getElementById('pay-reduced').checked; p.toBank = document.getElementById('pay-bank').checked; }
+  for (const k of ['hours', 'extraPct', 'holidayPct', 'nightPct']) if (p[k] === undefined) p[k] = ui.payDefaults[k];
+  return p;
+}
+function readGig() {
+  const s = ui.overlay.s;
+  const g = (id) => document.getElementById(id);
+  const num = (id) => Number(String(g(id)?.value || '').replace(/\./g, '').replace(',', '.')) || 0;
+  if (g('g-date')) {
+    s.date = g('g-date').value || s.date;
+    s.earnings = num('g-earn'); s.tips = num('g-tips'); s.km = num('g-km'); s.expenses = num('g-exp');
+    s.trips = Math.round(num('g-trips'));
+    const [h, m] = String(g('g-online').value || '').split(/[:hH]/).map((x) => Number(x) || 0); s.online = h * 60 + (m || 0);
+  }
+  return s;
+}
+
+// ---------- consultas e faltas agendadas ----------
+function apptCard() {
+  const list = L.upcomingAppointments(data.appointments, nowDT(), 90);
+  const t = today();
+  return `<div class="card"><div class="row"><div class="h3 grow">Consultas e faltas agendadas</div><button class="link" data-act="appt">+ Agendar</button></div>
+    ${list.length ? list.slice(0, 8).map((a) => `<div class="row tap" style="padding:8px 0" data-act="appt" data-id="${a.id}"><div class="grow"><b>${a.date === t ? 'Hoje' : a.date === L.addDays(t, 1) ? 'Amanhã' : dm(a.date)} · ${esc(a.title || L.APPT_KINDS[a.kind])}</b>
+      <div class="small muted">${esc(L.describeAppointment(a))}</div></div>${icon('right', 'color:var(--muted)')}</div>`).join('')
+      : '<div class="small muted" style="margin-top:6px">Marque consultas, exames, faltas ou folgas com antecedência: o app ajusta a jornada do dia e entra nos lembretes do Calendário.</div>'}</div>`;
+}
+
+// ---------- extras em R$ ----------
+function payCard() {
+  const p = data.settings.pay;
+  if (!L.payRate(p)) return `<div class="card"><div class="row"><div class="h3 grow">Extras do mês em R$</div><button class="link" data-act="pay">Configurar</button></div>
+    <div class="small muted">Informe salário ou valor da hora para ver quanto valem extras, domingos, feriados e o adicional noturno.</div></div>`;
+  const t = today(), c = cfg();
+  const m = L.monthPay(L.monthDays(t.slice(0, 7), byDate(), data.marks, c, nowDT()), p, t);
+  const row = (l, min, v) => `<div class="row small" style="padding:3px 0"><div class="grow">${l}</div><span class="muted">${dur(min)}</span><b>${L.money(v)}</b></div>`;
+  return `<div class="card"><div class="row"><div class="h3 grow">Extras do mês em R$</div><button class="link" data-act="pay">Ajustar</button></div>
+    <div class="h2" style="margin-top:4px">${L.money(m.total)}</div><div class="xs muted">${p.toBank !== false ? 'equivalente (vai para o banco)' : 'a receber (estimativa)'}</div>
+    ${row(`Extras ${p.extraPct ?? 50}%`, m.extra, m.extraValue)}${row(`Domingos e feriados ${p.holidayPct ?? 100}%`, m.holiday, m.holidayValue)}${row(`Adicional noturno ${p.nightPct ?? 20}%`, m.night, m.nightValue)}
+    <div class="xs muted" style="margin-top:6px">Valor da hora ${L.money(L.payRate(p))}. Sem descontos (INSS, IR) nem reflexos; confira no holerite.</div></div>`;
+}
+
+// ---------- corridas e entregas ----------
+function gigView() {
+  const t = today(), c = data.settings.gigCosts || {};
+  const ws = L.addDays(t, -L.weekdayIndex(t));
+  const w = L.gigSummary(data.gigs, ws, L.addDays(ws, 6), c);
+  const mo = L.gigSummary(data.gigs, t.slice(0, 8) + '01', t, c);
+  const on = data.settings.gigOnline;
+  const plat = ui.gigPlatform || data.gigs[0]?.platform || 'Uber';
+  const metric = (l, v) => `<div><div class="xs muted">${l}</div><b>${v}</b></div>`;
+  return `<div class="stack">
+    <div><div class="muted">Quanto rende cada hora nos apps</div><div class="h1">Corridas e entregas</div></div>
+    <div class="card">${on ? `<div class="h3">Online no ${esc(on.platform)}</div><div class="h2">desde ${on.since.slice(11, 16)} · ${dur(Math.max(0, L.minutesOf(nowDT()) - L.minutesOf(on.since) + (L.dateOf(nowDT()) > L.dateOf(on.since) ? 1440 : 0)))}</div>
+      <button class="btn block" style="margin-top:10px" data-act="gigOff">Encerrar turno e lançar ganhos</button>`
+      : `<div class="h3">Começar um turno</div><div class="chips" style="margin-top:8px">${L.GIG_PLATFORMS.slice(0, 6).map((p) => `<button class="chip ${p === plat ? 'on' : ''}" data-act="gigPlat" data-v="${p}">${p}</button>`).join('')}</div>
+      <button class="btn block" style="margin-top:10px" data-act="gigOn">Ficar online no ${esc(plat)}</button>`}
+      <div class="grid2" style="margin-top:8px"><button class="btn outline" data-act="gig">Lançar</button><button class="btn outline" data-act="gigPrint">Ler print</button></div>
+      <div class="xs muted" style="margin-top:6px">Os apps não liberam integração para motoristas e entregadores: mande o print do resumo de ganhos que o Ponto Foto lê.</div></div>
+    <div class="card"><div class="row"><div class="h3 grow">Esta semana</div><button class="link" data-act="gigCosts">Custos e meta</button></div>
+      <div class="h2">${L.money(w.net)}</div><div class="xs muted">líquido · ganhos ${L.money(w.earnings)} − gastos ${L.money(w.expenses)}</div>
+      ${c.goal > 0 ? `<div style="height:8px;border-radius:4px;background:var(--surface-2);margin-top:8px"><div style="height:8px;border-radius:4px;background:var(--primary);width:${Math.min(100, Math.max(0, w.net / c.goal * 100)).toFixed(0)}%"></div></div><div class="xs" style="margin-top:4px">Meta ${L.money(c.goal)} · faltam ${L.money(Math.max(0, c.goal - w.net))}</div>` : ''}
+      <div class="grid2" style="margin-top:10px;grid-template-columns:repeat(3,1fr)">${metric('Por hora', L.money(w.perHour))}${metric('Por km', L.money(w.perKm))}${metric('Por corrida', L.money(w.perTrip))}${metric('Online', dur(w.online))}${metric('Corridas', w.trips)}${metric('Km', Math.round(w.km))}</div>
+      ${Object.keys(w.byPlatform).length > 1 ? Object.entries(w.byPlatform).sort((a, b) => b[1] - a[1]).map(([p, v]) => `<div class="row small"><div class="grow">${esc(p)}</div><b>${L.money(v)}</b></div>`).join('') : ''}
+      ${!(c.kmPerLiter > 0 && c.fuelPrice > 0) ? '<div class="xs muted" style="margin-top:8px">Informe consumo e preço do combustível para estimar os gastos pelos km.</div>' : ''}</div>
+    <div class="card tight small">No mês: ${L.money(mo.net)} líquido em ${dur(mo.online)} online (${L.money(mo.perHour)}/h)</div>
+    <div class="h3">Turnos lançados</div>
+    ${data.gigs.length ? [...data.gigs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 40).map((s) => `<div class="card tight row tap" data-act="gig" data-id="${s.id}"><div class="grow"><b>${dm(s.date)} · ${esc(s.platform)}</b><div class="small muted">${dur(s.online || 0)} online · ${s.trips || 0} corridas · ${Math.round(s.km || 0)} km</div></div><b>${L.money((s.earnings || 0) + (s.tips || 0))}</b></div>`).join('') : '<div class="muted">Nenhum turno ainda.</div>'}
+  </div>`;
+}
+
 function remSettings() {
   if (!data.settings.reminders) data.settings.reminders = { punchTimes: ['07:30', '12:00', '13:00', '17:30'], punchLead: 10, holidayDaysBefore: 30, punch: true, holidays: true, monthly: true };
   return data.settings.reminders;
@@ -847,6 +1017,19 @@ function buildIcs() {
     ev(`mes-${first}`, [`DTSTART;TZID=America/Sao_Paulo:${d8(first)}T090000`, 'DURATION:PT10M', `SUMMARY:${ics('Seu mês no Ponto Foto')}`, `DESCRIPTION:${ics(txt)}`, ...alarm('PT0M', txt)]);
   }
   out.push('END:VCALENDAR');
+  for (const a of L.upcomingAppointments(data.appointments, nowDT(), 120)) {
+    const name = a.title || L.APPT_KINDS[a.kind] || 'Compromisso';
+    if (a.start && a.end) {
+      const lines = [`DTSTART:${d8(a.date)}T${a.start.replace(':', '')}00`, `DTEND:${d8(a.date)}T${a.end.replace(':', '')}00`, `SUMMARY:${ics(name)}`, `DESCRIPTION:${ics(L.describeAppointment(a))}`];
+      if (a.remind >= 0) lines.push(...alarm(`-PT${(a.remind || 0) + (a.travel || 0)}M`, `${name} às ${a.start}${a.travel ? `: saia às ${L.leaveAt(a)}` : ''}`));
+      ev(`appt-${a.id}`, lines);
+      if (a.treatment === 'ABONADA' && a.doc !== false) ev(`appt-doc-${a.id}`, [`DTSTART:${d8(a.date)}T${a.end.replace(':', '')}00`, `DURATION:PT10M`, `SUMMARY:${ics('Pegou a declaração de comparecimento?')}`, ...alarm('PT10M', 'Peça a declaração para abonar as horas.')]);
+    } else {
+      const lines = [`DTSTART;VALUE=DATE:${d8(a.date)}`, `DTEND;VALUE=DATE:${d8(L.addDays(a.date, 1))}`, `SUMMARY:${ics(name)}`, `DESCRIPTION:${ics(L.describeAppointment(a))}`];
+      if (a.remind >= 0) lines.push(...alarm('-PT6H', `Amanhã: ${name}`));
+      ev(`appt-${a.id}`, lines);
+    }
+  }
   return out.join('\r\n');
 }
 
@@ -974,6 +1157,55 @@ const actions = {
       : `Lido: ${L.hm(r.time)}${r.date ? ` · ${dm(r.date)}` : ''}. Confira e salve.`;
     openOverlay(back);
   },
+  appt: (d) => {
+    const ex = d.id && (data.appointments || []).find((a) => a.id === d.id);
+    openOverlay({ kind: 'appt', isNew: !ex, a: ex ? { ...ex } : { id: S.newId(), date: L.addDays(today(), 1), start: '14:00', end: '15:00', kind: 'CONSULTA', title: '', treatment: 'ABONADA', remind: 60, travel: 30, doc: true } });
+  },
+  apptKind: (d) => { const a = readAppt(); a.kind = d.v; if (d.v === 'FALTA' || d.v === 'FOLGA_BANCO') { a.start = null; a.end = null; a.treatment = 'BANCO'; } else if (!a.start) { a.start = '14:00'; a.end = '15:00'; a.treatment = 'ABONADA'; } renderOverlay(); },
+  apTravel: (d) => { readAppt().travel = Number(d.v); renderOverlay(); },
+  apTreat: (d) => { readAppt().treatment = d.v; renderOverlay(); },
+  apRemind: (d) => { readAppt().remind = Number(d.v); renderOverlay(); },
+  apSave: () => {
+    const a = readAppt();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.date || '')) { toast('Data inválida'); return; }
+    if (a.start && (!a.end || a.end <= a.start)) { toast('O fim precisa ser depois do início'); return; }
+    data.appointments = (data.appointments || []).filter((x) => x.id !== a.id).concat([a]);
+    save(); closeOverlay(); renderApp(); toast(`${a.title || L.APPT_KINDS[a.kind]} agendada para ${dm(a.date)}. Gere de novo os lembretes do Calendário em Ajustes.`);
+  },
+  apptDel: () => { const id = ui.overlay.a.id; data.appointments = (data.appointments || []).filter((x) => x.id !== id); save(); closeOverlay(); renderApp(); toast('Compromisso excluído'); },
+  pay: () => { ui.payDefaults = { hours: 220, extraPct: 50, holidayPct: 100, nightPct: 20 }; openOverlay({ kind: 'pay' }); },
+  payChip: (d) => { readPay(); data.settings.pay[d.k] = Number(d.v); renderOverlay(); },
+  paySave: () => { readPay(); save(); closeOverlay(); renderApp(); toast('Valor das horas salvo'); },
+  workMode: (d) => { data.settings.workMode = d.v; ui.tab = d.v === 'APPS' ? 'corridas' : 'ajustes'; save(); renderApp(); },
+  gigPlat: (d) => { ui.gigPlatform = d.v; renderApp(); },
+  gigOn: () => { data.settings.gigOnline = { platform: ui.gigPlatform || data.gigs[0]?.platform || 'Uber', since: nowDT().slice(0, 16) }; save(); renderApp(); },
+  gigOff: () => {
+    const on = data.settings.gigOnline; data.settings.gigOnline = null; save();
+    const mins = Math.max(0, L.minutesOf(nowDT()) - L.minutesOf(on.since) + (L.dateOf(nowDT()) > L.dateOf(on.since) ? 1440 : 0));
+    openOverlay({ kind: 'gig', isNew: true, s: { id: S.newId(), date: L.dateOf(on.since), platform: on.platform, online: mins } });
+  },
+  gig: (d) => {
+    const ex = d.id && data.gigs.find((g) => g.id === d.id);
+    openOverlay({ kind: 'gig', isNew: !ex, s: ex ? { ...ex } : { id: S.newId(), date: today(), platform: ui.gigPlatform || 'Uber' } });
+  },
+  gigSetPlat: (d) => { readGig().platform = d.v; renderOverlay(); },
+  gigSave: () => { const s = readGig(); data.gigs = data.gigs.filter((g) => g.id !== s.id).concat([s]); save(); closeOverlay(); renderApp(); toast('Turno salvo'); },
+  gigDel: () => { const id = ui.overlay.s.id; data.gigs = data.gigs.filter((g) => g.id !== id); save(); closeOverlay(); renderApp(); toast('Turno excluído'); },
+  gigCosts: () => openOverlay({ kind: 'gigCosts' }),
+  gigCostsSave: () => {
+    const v = (id) => Number(String(document.getElementById(id).value || '').replace(/\./g, '').replace(',', '.')) || 0;
+    data.settings.gigCosts = { kmPerLiter: v('gc-kml'), fuelPrice: v('gc-price'), goal: v('gc-goal') };
+    save(); closeOverlay(); renderApp();
+  },
+  gigPrint: () => document.getElementById('in-print').click(),
+  importSchedule: () => {
+    const sc = ui.overlay.schedule, set = ESC.toEmployeeSettings(sc.days);
+    data.settings.weekly = set.weekly;
+    data.settings.lunch = set.lunch;
+    set.folgas.forEach((d) => setMark(d, { type: 'FOLGA', note: 'Escala' }));
+    if (set.punchTimes) remSettings().punchTimes = set.punchTimes;
+    save(); closeOverlay(); renderApp(); toast('Escala importada');
+  },
   resetLayout: () => { data.settings.layout = null; save(); renderApp(); toast('Padrão esquecido'); },
   photo: (d) => openOverlay({ kind: 'photo', photoId: d.photo }),
   zoom: (_, el) => el.classList.toggle('z'),
@@ -1086,6 +1318,7 @@ document.addEventListener('change', (ev) => {
     if (el.checked) set.delete(el.dataset.key); else set.add(el.dataset.key);
     data.settings.disabledHolidays = [...set]; save(); renderApp();
   }
+  else if (kind === 'apAllDay') { const a = readAppt(); if (el.checked) { a.start = null; a.end = null; } else { a.start = '14:00'; a.end = '15:00'; } renderOverlay(); }
   else if (kind === 'keepPhotos') { data.settings.keepPhotos = el.checked; save(); renderApp(); }
   else if (kind === 'autoDouble') { data.settings.autoDouble = el.checked; save(); renderApp(); }
   else if (kind === 'optional') { data.settings.includeOptional = el.checked; save(); renderApp(); }
@@ -1129,6 +1362,15 @@ bindFile('in-gallery', (f) => handlePhoto(f[0]));
 window.addEventListener('focus', () => setTimeout(() => { if (ui.photoDate && !document.querySelector('.loading')) ui.photoDate = null; }, 1500));
 bindFile('in-esp-camera', handleEspelho);
 bindFile('in-esp-files', handleEspelho);
+bindFile('in-print', async (f) => {
+  loading('Lendo o print...');
+  let txt = '';
+  try { txt = await readText(f[0], loading); } catch (e) { console.error(e); }
+  loading(null);
+  const g = L.parseEarnings(txt);
+  openOverlay({ kind: 'gig', isNew: true, s: { id: S.newId(), date: today(), platform: g.platform || 'Uber', earnings: g.earnings || 0, tips: g.tips || 0, trips: g.trips || 0, online: g.online || 0, km: g.km || 0 } });
+  if (!g.earnings) toast('Não achei o valor no print. Confira e preencha.');
+});
 bindFile('in-backup', async (f) => {
   try {
     if (f[0].size > 5 * 1024 * 1024) throw new Error('grande demais');
@@ -1152,6 +1394,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rend
   data = await S.loadData();
   if (L.normalizeTypes(data.punches)) S.saveData(data);
   render();
+  checkScheduleLink();
   S.requestPersistence();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

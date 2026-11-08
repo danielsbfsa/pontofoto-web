@@ -1,6 +1,6 @@
 // Feriados, estratégias para a meta, emendas, ideias de férias, plano anual e mensagens do dia.
 // Mesmas regras do app Android (Plans.kt).
-import { addDays, weekdayIndex, expectedFor, bank, DAY_TYPES, pad2, formatDuration as dur } from './logic.js';
+import { addDays, weekdayIndex, expectedFor, owedFor as L_owedFor, bank, DAY_TYPES, pad2, formatDuration as dur } from './logic.js';
 
 // ---------------- feriados ----------------
 
@@ -107,7 +107,7 @@ export function isOff(date, config, marks) {
   const type = marks[date]?.type;
   if (type && !DAY_TYPES[type].countsExpected) return true;
   if (config.holidays && config.holidays.has(date)) return true;
-  return expectedFor(date, config) === 0;
+  return L_owedFor(date, config) === 0;
 }
 
 // ---------------- histórico semanal ----------------

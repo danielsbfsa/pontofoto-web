@@ -40,6 +40,8 @@ export function emptyData() {
       uf: '', city: '', customHolidays: [], disabledHolidays: [], includeOptional: false, autoDouble: true,
       strategy: { even: true, sat: 0, sun: 0, alt: 0 },
       reminders: { punchTimes: ['07:30', '12:00', '13:00', '17:30'], punchLead: 10, holidayDaysBefore: 30, punch: true, holidays: true, monthly: true } },
+    appointments: [], // {id, date, start, end, kind, title, treatment, remind, travel, doc, note}
+    gigs: [],         // {id, date, platform, online, earnings, tips, trips, km, expenses, note}
     lastReadId: null,
   };
 }

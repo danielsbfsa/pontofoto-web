@@ -258,6 +258,14 @@ async function readAreaCanvas(canvas, b, worker) {
   return { time: pick(texts.flatMap((t) => timesIn(t.replace(/\n/g, ' ')))), date: pick(texts.flatMap((t) => datesIn(t.replace(/\n/g, ' ')))) };
 }
 
+/** Texto de um print (ex.: resumo de ganhos de app de corrida). */
+export async function readText(file, onStatus) {
+  const canvas = await fileToCanvas(file, 2000);
+  const worker = await getWorker(onStatus);
+  onStatus?.('Lendo o print...');
+  return (await worker.recognize(canvas)).data.text || '';
+}
+
 /** Marcação manual: lê os pedaços que o usuário marcou na foto guardada (já tarjada). */
 export async function readMarked(photoBlob, timeBox, dateBox, onStatus) {
   const canvas = await fileToCanvas(photoBlob, 2400);

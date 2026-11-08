@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ponto Foto Escalas</title>
+  <meta name="description" content="Monte a escala da equipe e mande para cada pessoa importar no Ponto Foto.">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+  <style>
+    #app { max-width: 980px; padding-bottom: 48px; }
+    .grid-wrap { overflow-x: auto; }
+    table.esc { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
+    table.esc th { font-weight: 700; color: var(--muted); padding: 4px; white-space: nowrap; }
+    table.esc td.name { font-weight: 800; padding-right: 8px; white-space: nowrap; }
+    table.esc button.cell { width: 38px; height: 34px; border-radius: 8px; background: var(--primary-soft); color: var(--primary); font-weight: 800; font-size: 11px; }
+    table.esc button.cell.off { background: var(--surface-2); color: var(--muted); }
+    table.esc th.sun { color: var(--negative); }
+    .warn { background: color-mix(in srgb, var(--saida) 14%, transparent); border-radius: 12px; padding: 8px 12px; font-size: 13px; margin-top: 6px; }
+    .field input, .field select { font-size: 16px; }
+  </style>
+</head>
+<body>
+  <main id="app" aria-live="polite"></main>
+  <script type="module" src="js/escalas-app.js"></script>
+</body>
+</html>

@@ -28,7 +28,7 @@ jobs:
       - name: Montar o site e incluir as bibliotecas
         run: |
           mkdir -p _site
-          cp -r index.html privacidade.html manifest.webmanifest sw.js css js icons data _site/
+          cp -r index.html escalas.html privacidade.html manifest.webmanifest sw.js css js icons data _site/
           mkdir -p /tmp/libs && cd /tmp/libs && npm init -y >/dev/null
           npm install --no-audit --no-fund tesseract.js@5.1.1 tesseract.js-core@5.1.1 @tesseract.js-data/por pdfjs-dist@3.11.174 @fontsource-variable/manrope
           V=$GITHUB_WORKSPACE/_site/vendor

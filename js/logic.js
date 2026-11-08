@@ -63,6 +63,7 @@ export function parseSignedHHmm(text) {
 
 export const DAY_TYPES = {
   FOLGA: { label: 'Folga', countsExpected: false },
+  BANCO: { label: 'Folga do banco', countsExpected: true },
   FERIAS: { label: 'Férias', countsExpected: false },
   ATESTADO: { label: 'Atestado', countsExpected: false },
   FERIADO: { label: 'Feriado', countsExpected: false },
@@ -93,11 +94,11 @@ export function summarize(date, dayPunches, mark, config, now = null) {
   }
   const type = mark?.type || null;
   const holiday = !!(config.holidays && config.holidays.has(date));
-  const expected = (type && !DAY_TYPES[type].countsExpected) || (holiday && !type) ? 0 : expectedFor(date, config);
+  const expected = (type && !DAY_TYPES[type].countsExpected) || (holiday && !type) ? 0 : owedFor(date, config);
   const doubled = isDoubled(date, mark, config);
   const credited = doubled ? worked * 2 : worked;
   // dia com batida faltando não entra no banco até ser corrigido
-  const raw = (sorted.length === 0 && !type) || incomplete ? 0 : credited - expected;
+  const raw = (sorted.length === 0 && !type && !(config.owed && config.owed.has(date))) || incomplete ? 0 : credited - expected;
   const balance = sorted.length > 0 && Math.abs(raw) <= config.tolerance ? 0 : raw;
   return {
     date, punches: sorted, mark: mark || null, dayType: type, doubled, holiday,
@@ -127,7 +128,7 @@ export function groupByDate(punches) {
 /** Banco = saldo inicial + dias depois dele e antes de [before] + ajustes depois dele (até [adjustmentsUntil]). */
 export function bank(byDate, marks, config, adjustments, checkpoint, before, adjustmentsUntil = null) {
   const cp = checkpoint && checkpoint.date < before ? checkpoint : null;
-  const dates = new Set([...Object.keys(byDate), ...Object.keys(marks)]);
+  const dates = new Set([...Object.keys(byDate), ...Object.keys(marks), ...(config.owed || [])]);
   let days = 0;
   for (const d of dates) {
     if (d < before && (!cp || d > cp.date)) days += summarize(d, byDate[d], marks[d], config).balanceMinutes;
@@ -733,4 +734,112 @@ export function validateBackup(b) {
   for (const m of marks) if (!isD(m.date) || (m.type && !DAY_TYPES[m.type])) throw new Error('Dia inválido');
   if (b.checkpoint && (!isD(b.checkpoint.date) || !num(b.checkpoint.minutes))) throw new Error('Saldo inválido');
   return true;
+}
+
+// ---------------- consultas, faltas e folgas agendadas ----------------
+
+/** Jornada cobrada no dia, já descontado o abono de compromissos agendados. */
+export function owedFor(date, config) {
+  return Math.max(0, expectedFor(date, config) - ((config.abono && config.abono[date]) || 0));
+}
+export function appointmentMinutes(a) { return a.start && a.end ? Math.max(0, toMinutesHM(a.end) - toMinutesHM(a.start)) : 0; }
+const toMinutesHM = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+/**
+ * Aplica os compromissos à configuração: abonado com horário tira esses minutos da jornada;
+ * abonado o dia todo zera a jornada; "desconta do banco" o dia todo conta como falta mesmo sem batidas.
+ */
+export function applyAppointments(config, appts) {
+  const abono = {}, owed = new Set();
+  for (const a of appts || []) {
+    const allDay = !a.start || !a.end;
+    if (a.treatment === 'ABONADA') abono[a.date] = Math.min(1440, (abono[a.date] || 0) + (allDay ? 1440 : appointmentMinutes(a)));
+    else if (a.treatment === 'BANCO' && allDay) owed.add(a.date);
+  }
+  return { ...config, abono, owed };
+}
+
+/** Próximos compromissos (inclui os de hoje que ainda não acabaram). */
+export function upcomingAppointments(appts, nowDT, days = 60) {
+  const today = dateOf(nowDT), limit = addDaysISO(today, days), nowM = minutesOf(nowDT);
+  return (appts || []).filter((a) => a.date <= limit && (a.date > today || (a.date === today && (!a.end || toMinutesHM(a.end) > nowM))))
+    .sort((a, b) => (a.date + (a.start || '')).localeCompare(b.date + (b.start || '')));
+}
+function addDaysISO(iso, n) { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+
+export const APPT_KINDS = { CONSULTA: 'Consulta', EXAME: 'Exame', FALTA: 'Falta', FOLGA_BANCO: 'Folga do banco', OUTRO: 'Compromisso' };
+export const APPT_TREATMENTS = { ABONADA: 'Abonada', BANCO: 'Desconta do banco', SO_LEMBRETE: 'Só lembrete' };
+export function leaveAt(a) { return a.start ? hm(Math.max(0, toMinutesHM(a.start) - (a.travel || 0))) : null; }
+export function describeAppointment(a) {
+  const time = a.start && a.end ? `${a.start}–${a.end}` : 'dia todo';
+  const leave = a.start && a.travel ? ` · sair às ${leaveAt(a)}` : '';
+  const eff = a.treatment === 'ABONADA' ? ' · abonada' : a.treatment === 'BANCO' ? ' · desconta do banco' : '';
+  return `${a.title || APPT_KINDS[a.kind] || 'Compromisso'} ${time}${leave}${eff}`;
+}
+
+// ---------------- horas extras em R$ e adicional noturno ----------------
+
+export function payRate(p) { return p?.hourly > 0 ? p.hourly : p?.salary > 0 && p?.hours > 0 ? p.salary / p.hours : 0; }
+export function nightMinutes(fromDT, toDT) {
+  const toAbs = (dt) => Date.parse(dt.slice(0, 16) + ':00Z') / 60000;
+  const a = toAbs(fromDT), b = toAbs(toDT);
+  if (!(b > a)) return 0;
+  let total = 0;
+  const day0 = Math.floor(a / 1440) - 1, day1 = Math.floor(b / 1440);
+  for (let d = day0; d <= day1; d++) {
+    const ns = d * 1440 + 22 * 60, ne = d * 1440 + 1440 + 5 * 60;
+    total += Math.max(0, Math.min(b, ne) - Math.max(a, ns));
+  }
+  return total;
+}
+/** Estimativa do mês: extras, domingos/feriados e adicional noturno. */
+export function monthPay(days, p, until) {
+  let extra = 0, holiday = 0, night = 0;
+  for (const s of days) {
+    if (s.date > until || s.incomplete) continue;
+    for (let i = 0; i + 1 < s.punches.length; i += 2) night += nightMinutes(s.punches[i].dateTime, s.punches[i + 1].dateTime);
+    if (s.doubled) holiday += s.workedMinutes; else extra += Math.max(0, s.workedMinutes - s.expectedMinutes);
+  }
+  const r = payRate(p), e = p?.extraPct ?? 50, h = p?.holidayPct ?? 100, n = p?.nightPct ?? 20;
+  const nightH = night / 60 * (p?.nightReduced === false ? 1 : 60 / 52.5);
+  const extraValue = extra / 60 * r * (1 + e / 100), holidayValue = holiday / 60 * r * (1 + h / 100), nightValue = nightH * r * n / 100;
+  return { extra, holiday, night, extraValue, holidayValue, nightValue, total: extraValue + holidayValue + nightValue };
+}
+export function money(v) {
+  const c = Math.round(v * 100), r = Math.floor(Math.abs(c) / 100), cents = Math.abs(c) % 100;
+  return `${c < 0 ? '-' : ''}R$ ${String(r).replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${pad2(cents)}`;
+}
+
+// ---------------- corridas e entregas ----------------
+
+export const GIG_PLATFORMS = ['Uber', '99', 'iFood', 'inDrive', 'Rappi', 'Loggi', 'Lalamove', 'Shopee', 'Mercado Livre', 'Outro'];
+export function gigExpense(s, c) { return s.expenses > 0 ? s.expenses : (s.km || 0) * (c?.kmPerLiter > 0 && c?.fuelPrice > 0 ? c.fuelPrice / c.kmPerLiter : 0); }
+export function gigSummary(shifts, from, to, costs) {
+  const list = (shifts || []).filter((s) => s.date >= from && s.date <= to);
+  const earnings = list.reduce((a, s) => a + (s.earnings || 0) + (s.tips || 0), 0);
+  const expenses = list.reduce((a, s) => a + gigExpense(s, costs), 0);
+  const online = list.reduce((a, s) => a + (s.online || 0), 0);
+  const trips = list.reduce((a, s) => a + (s.trips || 0), 0);
+  const km = list.reduce((a, s) => a + (s.km || 0), 0);
+  const byPlatform = {};
+  list.forEach((s) => { byPlatform[s.platform] = (byPlatform[s.platform] || 0) + (s.earnings || 0) + (s.tips || 0); });
+  const net = earnings - expenses;
+  return { earnings, expenses, net, online, trips, km, byPlatform,
+    perHour: online > 0 ? net / (online / 60) : 0, perKm: km > 0 ? earnings / km : 0, perTrip: trips > 0 ? earnings / trips : 0 };
+}
+/** Lê o texto de um print de ganhos (Uber, 99, iFood...): os apps não têm integração para o trabalhador. */
+export function parseEarnings(raw) {
+  const t = String(raw).toUpperCase().normalize('NFD').replace(/\p{Mn}+/gu, '');
+  const platform = /UBER/.test(t) ? 'Uber' : /\b99\b|99POP|99FOOD/.test(t) ? '99' : /IFOOD/.test(t) ? 'iFood' : /INDRIVE/.test(t) ? 'inDrive'
+    : /RAPPI/.test(t) ? 'Rappi' : /LOGGI/.test(t) ? 'Loggi' : /LALAMOVE/.test(t) ? 'Lalamove' : /SHOPEE/.test(t) ? 'Shopee' : /MERCADO (LIVRE|ENVIOS)/.test(t) ? 'Mercado Livre' : null;
+  const vals = [...t.matchAll(/R\$\s*(\d{1,3}(?:[.\s]\d{3})*,\d{2}|\d+,\d{2})/g)].map((m) => ({ i: m.index, v: Number(m[1].replace(/[.\s]/g, '').replace(',', '.')) }));
+  const lab = vals.find((x) => /(GANHO|TOTAL|RECEBID|FATUR|VOCE GANHOU|SEUS GANHOS)/.test(t.slice(Math.max(0, x.i - 40), x.i)));
+  const earnings = lab ? lab.v : vals.length ? Math.max(...vals.map((x) => x.v)) : null;
+  const tip = vals.find((x) => /(GORJETA|CAIXINHA)/.test(t.slice(Math.max(0, x.i - 30), x.i)));
+  let m;
+  const trips = (m = /(\d{1,4})\s*(VIAGENS|VIAGEM|CORRIDAS|CORRIDA|ENTREGAS|ENTREGA|PEDIDOS)/.exec(t)) ? Number(m[1]) : null;
+  const online = (m = /(\d{1,3})\s*H\s*(\d{1,2})\s*(MIN|M)\b/.exec(t)) ? Number(m[1]) * 60 + Number(m[2])
+    : (m = /ONLINE\s*:?\s*(\d{1,3}):(\d{2})/.exec(t)) ? Number(m[1]) * 60 + Number(m[2]) : null;
+  const km = (m = /(\d{1,4}(?:,\d{1,2})?)\s*KM\b/.exec(t)) ? Number(m[1].replace(',', '.')) : null;
+  return { platform, earnings, tips: tip ? tip.v : null, trips, online, km };
 }
