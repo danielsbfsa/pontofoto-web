@@ -459,7 +459,7 @@ function settingsView() {
     <div class="card"><div class="h3">Backup</div><div class="small muted">Mesmo formato do app Android: dá para levar os dados de um para o outro.</div>
       <div class="grid2" style="margin-top:12px"><button class="btn outline" data-act="exportBackup">Exportar</button><button class="btn outline" data-act="importBackup">Importar</button></div></div>
     <div class="card"><div class="h3">Instalar no iPhone</div><div class="small muted" style="margin-top:4px">No Safari, toque em <b>Compartilhar</b> (quadrado com seta) → <b>Adicionar à Tela de Início</b>. O app abre em tela cheia e funciona sem internet. Na primeira leitura de foto ele baixa o leitor de texto (alguns MB).</div></div>
-    <div class="center xs muted">Ponto Foto web 1.3 · seus dados ficam só neste aparelho.<br>Controle pessoal: não substitui o registro oficial de ponto (Portaria MTE 671/2021).</div>
+    <div class="center xs muted">Ponto Foto web 1.4 · seus dados ficam só neste aparelho.<br>Controle pessoal: não substitui o registro oficial de ponto (Portaria MTE 671/2021).</div>
   </div>`;
 }
 
