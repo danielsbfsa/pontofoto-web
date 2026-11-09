@@ -165,3 +165,25 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .mark-bar { padding: 12px 16px calc(var(--safe-b, 0px) + 12px); gap: 8px; }
 .mark-bar .btn { width: auto; padding: 0 16px; }
 .mark-bar .btn.outline { color: #fff; border-color: rgba(255,255,255,.5); }
+
+/* ---------- estilos de visual (Ajustes › Aparência) ---------- */
+html { background: var(--bg-solid, var(--bg)); }
+body { background: var(--bg); background-attachment: fixed; min-height: 100vh; }
+.btn.white { color: var(--brand-ink, #3A2CB5); }
+.sheet { background: var(--bg-solid, var(--bg)); }
+.tabbar { background: var(--bg-solid, var(--surface)); }
+[data-style="neon"] .card, [data-style="neon"] .tile { box-shadow: 0 0 0 1px var(--glow-a); }
+[data-style="neon"] .brand { box-shadow: 0 0 0 1.5px var(--glow), 0 0 26px var(--glow-a); }
+[data-style="neon"] { --radius-s: 10px; --radius-m: 14px; --radius-l: 18px; --radius-xl: 22px; }
+[data-style="minimo"] { --radius-s: 6px; --radius-m: 8px; --radius-l: 10px; --radius-xl: 12px; }
+[data-style="minimo"] .card, [data-style="minimo"] .tile { background: transparent; box-shadow: inset 0 0 0 1px var(--outline); }
+[data-style="vidro"] { --radius-s: 14px; --radius-m: 20px; --radius-l: 28px; --radius-xl: 36px; }
+[data-style="vidro"] .card, [data-style="vidro"] .tile { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
+[data-style="vidro"] .brand { box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
+[data-style="contraste"] body { font-size: 16.5px; }
+[data-style="contraste"] .small { font-size: 14.5px; } [data-style="contraste"] .xs { font-size: 13.5px; }
+[data-style="contraste"] .card, [data-style="contraste"] .tile { box-shadow: inset 0 0 0 2px var(--outline); }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.swatch { width: 62px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; text-align: center; }
+.swatch i { width: 42px; height: 42px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px var(--outline); }
+.swatch.on i { box-shadow: 0 0 0 3px var(--bg-solid, var(--bg)), 0 0 0 5px var(--text); }

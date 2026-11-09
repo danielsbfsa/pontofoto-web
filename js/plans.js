@@ -368,3 +368,33 @@ export function dailyMessage(date) {
   const n = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
   return MESSAGES[((n % MESSAGES.length) + MESSAGES.length) % MESSAGES.length];
 }
+
+// ---------- frases por situação (igual ao Android: Plans.moodMessage) ----------
+export const SITUATION = {
+  segunda: ['Segunda-feira: o café de hoje precisa ser duplo.', 'Semana nova, banco novo. Bora?', 'Segunda chegou sem pedir licença. Vamos com calma.'],
+  sexta: ['Sextou! Só falta o último ponto do dia.', 'Sexta-feira: o ponto de saída hoje vale ouro.', 'Hoje é sexta. O fim de semana está a uma batida de distância.'],
+  fimdesemana: ['Trabalhando no fim de semana? Confira se é dobrado.', 'Fim de semana no batente: o banco agradece, o sofá sente sua falta.'],
+  verde: ['Banco no azul! Que tal uma saída mais cedo?', 'Saldo positivo: você está devendo é descanso.', 'Seu banco está tão bom que já pode pedir ponte.'],
+  vermelho: ['Banco no vermelho, mas nada que uns minutinhos por dia não resolvam.', '15 minutos a mais hoje e o banco já sorri.', 'Devendo horas? Calma, meta pequena todo dia resolve.'],
+  cumprida: ['Jornada cumprida! Pode ir com a consciência leve.', 'Missão do dia: completa. Casa: te esperando.', 'Bateu a meta do dia. O resto é bônus.'],
+  extra: ['Hora extra rolando. Não esqueça de jantar!', 'Você já passou da jornada. O banco agradece, o corpo pede pausa.'],
+  semponto: ['Ainda sem ponto hoje. O relógio está te esperando!', 'Bom dia! Primeiro passo: bater o ponto e tirar a foto.'],
+};
+
+/** now = 'AAAA-MM-DDTHH:MM'. */
+export function moodMessage(now, bank, worked, expected, punches, open) {
+  const d = now.slice(0, 10), h = Number(now.slice(11, 13)), wi = weekdayIndex(d);
+  let key = null;
+  if (expected > 0 && worked > expected + 30 && open) key = 'extra';
+  else if (expected > 0 && worked >= expected && !open && punches >= 2) key = 'cumprida';
+  else if (expected > 0 && punches === 0 && h >= 6 && h <= 11) key = 'semponto';
+  else if (wi >= 5) key = punches > 0 ? 'fimdesemana' : null;
+  else if (wi === 4) key = 'sexta';
+  else if (wi === 0 && h < 12) key = 'segunda';
+  else if (bank <= -60) key = 'vermelho';
+  else if (bank >= 240) key = 'verde';
+  if (!key) return dailyMessage(d);
+  const list = SITUATION[key];
+  const n = Math.floor(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000);
+  return list[((n % list.length) + list.length) % list.length];
+}

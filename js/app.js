@@ -4,6 +4,7 @@ import * as S from './store.js';
 import { readReceipt, readEspelho, readMarked, readText, fileToCanvas, canvasToBlob } from './ocr.js';
 import * as ESC from './escala.js';
 import * as P from './plans.js';
+import * as TH from './theme.js';
 
 const $app = document.getElementById('app');
 const $ov = document.getElementById('overlay');
@@ -52,6 +53,8 @@ const isDoubleEligible = (date, type) => L.weekdayIndex(date) === 6 || type === 
 const bankUntilYesterday = () => L.bank(byDate(), data.marks, cfg(), data.adjustments, data.settings.checkpoint, today());
 
 /** Salva; antes, acerta entrada/saída pela ordem dos horários (evita saldo negativo "fantasma"). */
+const ap = () => data.settings.appearance || (data.settings.appearance = { accent: 'ORIGINAL', style: 'SUAVE', mode: 'SISTEMA', focus: 'RELOGIO', message: '' });
+function setAp(patch) { Object.assign(ap(), patch); save(); TH.applyAppearance(ap()); render(); }
 function save() { L.normalizeTypes(data.punches); S.saveData(data); }
 
 const ICONS = {
@@ -167,7 +170,7 @@ function homeView() {
       <div class="grid2" style="margin-top:10px"><button class="btn outline" data-act="confirmHoliday" data-key="${esc(pendingMun.key)}" data-yes="">Trabalho normal</button>
       <button class="btn" data-act="confirmHoliday" data-key="${esc(pendingMun.key)}" data-yes="1">É folga</button></div></div>` : ''}
 
-    <div class="card tight tap" data-act="tab" data-tab="agenda"><div>${esc(P.dailyMessage(t))}</div>
+    <div class="card tight tap" data-act="tab" data-tab="agenda"><div>${esc(P.moodMessage(now, bank, s.workedMinutes, s.expectedMinutes, s.punches.length, !!s.openSince))}</div>
       ${nextHol ? `<div class="small" style="color:var(--primary);font-weight:700;margin-top:8px">Próximo feriado: ${esc(nextHol.name)}, ${dm(nextHol.date)} (${nextHol.weekday})${nextHol.kind === 'prolongado' ? ' · feriadão!' : nextHol.kind === 'ponte' ? ` · dá ponte em ${dm(nextHol.bridge)}` : ''}${nextHol.inDays === 0 ? ' · hoje' : ` · em ${nextHol.inDays} dias`}</div>` : ''}</div>
 
     ${lastRead ? `<div class="card"><div class="h3">Confira o horário lido</div>
@@ -178,13 +181,13 @@ function homeView() {
 
     <div class="brand">
       <span class="pill" style="background:rgba(255,255,255,.16);color:${s.openSince ? 'var(--accent)' : '#fff'}"><span class="dot"></span>${esc(status)}</span>
-      <div class="clock" style="margin-top:10px" data-clock>${now.slice(11, 16)}<small>:${String(new Date().getSeconds()).padStart(2, '0')}</small></div>
+      ${heroBlock(ap().focus || 'RELOGIO', now, bank, s, f, suggested)}
       <div class="row" style="margin-top:12px">${ring(progress)}<div>
         <div class="label" style="color:rgba(255,255,255,.7)">Trabalhado hoje</div>
         <div class="h1">${dur(s.workedMinutes)}</div>
         <div class="small muted">${s.expectedMinutes > 0 ? `de ${dur(s.expectedMinutes)} · saldo ${fmt(s.workedMinutes - s.expectedMinutes)}` : 'dia sem jornada'}</div></div></div>
       ${fc}
-      <button class="btn white block" style="margin-top:18px" data-act="punch">${icon('punch')} Bater ponto · ${typeLabel(suggested)}</button>
+      ${(ap().focus || 'RELOGIO') !== 'BOTAO' ? `<button class="btn white block" style="margin-top:18px" data-act="punch">${icon('punch')} Bater ponto · ${typeLabel(suggested)}</button>` : ''}
     </div>
 
     <div class="grid2">
@@ -205,6 +208,43 @@ function homeView() {
     <div class="card"><div class="row"><div class="h3 grow">Marcações de hoje</div><button class="link" data-act="markSheet" data-date="${t}">Marcar dia</button></div>
       ${s.punches.length ? timeline(s.punches) + (s.incomplete ? '<div class="small neg" style="margin-top:6px">Há uma marcação sem par. Confira entradas e saídas.</div>' : '')
         : '<div class="center muted" style="padding:20px 0">Nenhum ponto hoje.<br>Bata o ponto no relógio e fotografe o comprovante.</div>'}</div>
+  </div>`;
+}
+
+/** O que fica em destaque no cartão principal (Ajustes › Aparência). */
+function heroBlock(focus, now, bank, s, f, suggested) {
+  const small = `<div class="small" style="color:rgba(255,255,255,.75);margin-top:4px">Agora <span data-clock-small>${now.slice(11, 16)}</span></div>`;
+  if (focus === 'BANCO') return `<div style="margin-top:10px"><div class="label" style="color:rgba(255,255,255,.7)">Banco de horas · até ontem</div>
+    <div class="clock tap" data-act="tab" data-tab="banco" style="font-size:52px">${fmt(bank)}</div>${small}</div>`;
+  if (focus === 'MENSAGEM') return `<div style="margin-top:10px"><div class="h2" style="color:#fff">${esc(ap().message || 'Escreva sua frase em Ajustes › Aparência.')}</div>${small}</div>`;
+  if (focus === 'LEMBRETES') {
+    const a = L.upcomingAppointments(data.appointments, now, 7)[0];
+    const line = f && s.openSince && !f.journeyDone && f.forJourney !== null ? `Saída prevista às ${L.hm(f.forJourney % 1440)}`
+      : a ? `${a.title || L.APPT_KINDS[a.kind]} ${dm(a.date)}${a.start ? ` às ${a.start}` : ''}` : 'Nenhum lembrete pendente';
+    return `<div style="margin-top:10px"><div class="label" style="color:rgba(255,255,255,.7)">Próximo</div><div class="h2" style="color:#fff">${esc(line)}</div>${small}</div>`;
+  }
+  if (focus === 'BOTAO') return `<button class="btn white block" style="margin-top:12px;height:76px;font-size:20px" data-act="punch">${icon('punch')} Bater ponto · ${typeLabel(suggested)}</button>
+    <div class="h3" style="color:rgba(255,255,255,.85);margin-top:8px">Agora <span data-clock-small>${now.slice(11, 16)}</span></div>`;
+  return `<div class="clock" style="margin-top:10px" data-clock>${now.slice(11, 16)}<small>:${String(new Date().getSeconds()).padStart(2, '0')}</small></div>`;
+}
+
+function appearanceCard() {
+  const a = ap();
+  return `<div class="card"><div class="h3">Aparência</div>
+    <div class="grid2" style="margin-top:10px;grid-template-columns:1.3fr 1fr"><div class="brand" style="padding:14px"><div class="h2" style="color:#fff">08:42</div><div class="xs accent">Trabalhando desde 08:00</div></div>
+      <div class="tile"><div class="label">Banco</div><div class="v pos">+3:20</div></div></div>
+    <div class="label" style="margin-top:12px">Estilo</div>
+    <div class="chips" style="margin-top:6px">${TH.STYLES.map((v) => `<button class="chip ${a.style === v.id ? 'on' : ''}" data-act="apStyle" data-v="${v.id}">${v.label}</button>`).join('')}</div>
+    <div class="xs muted" style="margin-top:4px">${esc((TH.STYLES.find((v) => v.id === a.style) || TH.STYLES[0]).hint)}</div>
+    <div class="label" style="margin-top:12px">Cor do app (${TH.ACCENTS.length} opções)</div>
+    <div class="swatches" style="margin-top:8px">${TH.ACCENTS.map((c) => `<button class="swatch ${a.accent === c.id ? 'on' : ''}" data-act="apAccent" data-v="${c.id}" aria-label="${c.label}"><i style="background:${c.id === 'PRETO' ? '#000' : c.neon}"></i>${c.label}</button>`).join('')}</div>
+    <div class="label" style="margin-top:12px">Tema</div>
+    <div class="chips" style="margin-top:6px">${TH.MODES.map(([k, l]) => `<button class="chip ${a.mode === k ? 'on' : ''}" data-act="apMode" data-v="${k}" ${a.accent === 'PRETO' && k !== 'ESCURO' ? 'disabled style="opacity:.4"' : ''}>${l}</button>`).join('')}</div>
+    ${a.accent === 'PRETO' ? '<div class="xs muted" style="margin-top:4px">Preto black usa sempre o tema escuro.</div>' : ''}
+    <div class="label" style="margin-top:12px">Destaque da tela Hoje</div>
+    <div class="chips" style="margin-top:6px">${TH.FOCUS.map(([k, l]) => `<button class="chip ${(a.focus || 'RELOGIO') === k ? 'on' : ''}" data-act="apFocus" data-v="${k}">${l}</button>`).join('')}</div>
+    ${a.focus === 'MENSAGEM' ? `<label class="field" style="margin-top:10px"><span>Sua frase (até 80 letras)</span><input id="ap-msg" maxlength="80" enterkeyhint="done" value="${esc(a.message || '')}" placeholder="Ex.: Foco na viagem de dezembro!" style="font-size:16px"></label>
+      <div style="text-align:right"><button class="link" data-act="apMsg">Salvar frase</button></div>` : ''}
   </div>`;
 }
 
@@ -417,6 +457,7 @@ function settingsView() {
       <div><div class="h3">Perfil</div><div class="small muted">Só o primeiro nome, opcional.</div></div></div>
       <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="pf-name" maxlength="30" autocapitalize="words" enterkeyhint="done" value="${esc(st.name)}" style="font-size:16px"></label>
       <div style="text-align:right"><button class="link" data-act="saveProfile">Salvar nome</button></div></div>
+    ${appearanceCard()}
     <div class="card"><div class="h3">Como você trabalha</div><div class="small muted">Escolha o que aparece no app.</div>
       <div class="chips" style="margin-top:8px">${[['CLT', 'Carteira assinada (ponto)'], ['APPS', 'Apps de corrida/entrega'], ['AMBOS', 'Os dois']].map(([k, l]) => `<button class="chip ${(st.workMode || 'CLT') === k ? 'on' : ''}" data-act="workMode" data-v="${k}">${l}</button>`).join('')}</div></div>
     <div class="card"><div class="h3">Escala do trabalho</div><div class="small muted">Recebeu um link de escala do patrão? Abra o link no celular e o app ajusta jornada, folgas e lembretes. Organiza uma equipe? <a class="link" href="escalas.html">Monte a escala aqui</a>.</div></div>
@@ -1284,6 +1325,11 @@ const actions = {
   remLead: (d) => { remSettings().punchLead = Number(d.v); save(); renderApp(); },
   remHolDays: (d) => { remSettings().holidayDaysBefore = Number(d.v); save(); renderApp(); },
   exportIcs: () => shareOrDownload(new Blob([buildIcs()], { type: 'text/calendar' }), 'pontofoto-lembretes.ics', 'Lembretes Ponto Foto'),
+  apStyle: (d) => setAp({ style: d.v }),
+  apAccent: (d) => setAp({ accent: d.v, ...(d.v === 'PRETO' ? { mode: 'ESCURO' } : {}) }),
+  apMode: (d) => setAp({ mode: d.v }),
+  apFocus: (d) => setAp({ focus: d.v }),
+  apMsg: () => { setAp({ message: (document.getElementById('ap-msg').value || '').trim().slice(0, 80) }); toast('Frase salva'); },
   editName: () => { openOverlay({ kind: 'name' }); const i = document.getElementById('nm-name'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } },
   saveName: () => { const n = L.firstName(document.getElementById('nm-name').value); data.settings.name = n; save(); closeOverlay(); renderApp(); toast(n ? 'Nome salvo' : 'Nome removido'); },
   saveProfile: () => { data.settings.name = L.firstName(document.getElementById('pf-name').value); save(); renderApp(); toast('Salvo'); },
@@ -1351,6 +1397,7 @@ document.addEventListener('change', (ev) => { if (ev.target.id === 'loc-uf') fil
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Enter') return;
   if (ev.target.id === 'nm-name') { ev.preventDefault(); actions.saveName(); }
+  if (ev.target.id === 'ap-msg') { ev.preventDefault(); actions.apMsg(); }
   if (ev.target.id === 'pf-name') { ev.preventDefault(); actions.saveProfile(); }
 });
 
@@ -1396,6 +1443,8 @@ bindFile('in-backup', async (f) => {
 
 setInterval(() => {
   const el = document.querySelector('[data-clock]');
+  const sm = document.querySelector('[data-clock-small]');
+  if (sm) { const n = new Date(); sm.textContent = `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`; }
   if (el) { const n = new Date(); el.innerHTML = `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}<small>:${String(n.getSeconds()).padStart(2, '0')}</small>`; }
 }, 1000);
 setInterval(() => { if (!document.activeElement || document.activeElement === document.body) renderApp(); }, 60000);
@@ -1404,6 +1453,8 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) rend
 (async () => {
   data = await S.loadData();
   if (L.normalizeTypes(data.punches)) S.saveData(data);
+  TH.applyAppearance(data.settings.appearance);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => TH.applyAppearance(data.settings.appearance));
   render();
   checkScheduleLink();
   S.requestPersistence();

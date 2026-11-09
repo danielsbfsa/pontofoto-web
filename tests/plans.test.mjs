@@ -92,3 +92,10 @@ test('saldo fantasma: fotos fora de ordem e dia incompleto', () => {
   assert.ok(um.incomplete);
   assert.equal(um.balanceMinutes, 0);
 });
+
+import { moodMessage, SITUATION } from '../js/plans.js';
+test('frase da situação igual ao Android', () => {
+  assert.ok(SITUATION.sexta.includes(moodMessage('2026-11-13T15:00', 0, 300, 480, 2, true)));
+  assert.ok(SITUATION.cumprida.includes(moodMessage('2026-11-11T18:00', 0, 480, 480, 4, false)));
+  assert.ok(SITUATION.vermelho.includes(moodMessage('2026-11-10T14:00', -120, 200, 480, 2, true)));
+});
