@@ -1,6 +1,6 @@
 // Leitura das fotos (Tesseract.js) e dos PDFs (pdf.js), tudo no próprio aparelho.
 // As bibliotecas ficam em ./vendor (o GitHub as inclui na publicação).
-import { parseReceipt, vote, parseEspelho, personalWords, isSensitiveLine, isBareLabel, guidedRead, isTrained, timesIn, datesIn, textArea, toAbsolute } from './logic.js';
+import { parseReceipt, vote, parseEspelho, personalWords, isSensitiveLine, isBareLabel, guidedRead, isTrained, timesIn, datesIn, textArea, toAbsolute, isProtectedWord, prepareRedaction } from './logic.js';
 
 const VENDOR = new URL('../vendor/', import.meta.url).href;
 
@@ -151,9 +151,8 @@ function findTimeBox(data, time, toOrig) {
   return [r.x0, r.y0, r.x1, r.y1].map((v) => Math.max(0, Math.min(1, v)));
 }
 
-/** Trechos com dados pessoais (frações da imagem). Numa linha com a data/hora, tarja só as palavras pessoais. */
-function sensitiveBoxes(pass, words, time) {
-  const hh = time !== null && time !== undefined ? `${String(Math.floor(time / 60)).padStart(2, '0')}${String(time % 60).padStart(2, '0')}` : null;
+/** Palavras com dados pessoais (frações da imagem), uma a uma; data, hora e rótulos nunca entram. */
+function sensitiveBoxes(pass, words) {
   const out = [];
   let prevLabel = false;
   for (const line of linesOf(pass.data)) {
@@ -161,28 +160,30 @@ function sensitiveBoxes(pass, words, time) {
     const sensitive = prevLabel || isSensitiveLine(text, words);
     prevLabel = isBareLabel(text);
     if (!sensitive) continue;
-    const compact = text.toUpperCase().replace(/O/g, '0').replace(/[^0-9]/g, '');
-    const keepsPunch = (hh && compact.includes(hh)) || /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(text);
-    if (!keepsPunch) { out.push(pass.toOrig(line.bbox)); continue; }
-    let hideNext = 0;
-    for (const w of line.words || []) {
-      const t = w.text || '';
-      if (/\d{1,2}[:/.]\d{2}/.test(t) || /^(DATA|HORA)/i.test(t)) { hideNext = 0; continue; }
-      if (isSensitiveLine(t, words)) { out.push(pass.toOrig(w.bbox)); hideNext = 4; continue; }
-      if (hideNext > 0) { out.push(pass.toOrig(w.bbox)); hideNext--; }
-    }
+    const ws = line.words || [];
+    if (!ws.length) { if (!isProtectedWord(text)) out.push(pass.toOrig(line.bbox)); continue; }
+    for (const w of ws) if (!isProtectedWord(w.text || '')) out.push(pass.toOrig(w.bbox));
   }
   return out;
 }
 
-function redact(canvas, boxes) {
+/** Onde estão a data, a hora e os rótulos (para a tarja contornar). */
+function protectedBoxes(pass) {
+  const out = [];
+  for (const line of linesOf(pass.data)) for (const w of line.words || []) if (isProtectedWord(w.text || '')) out.push(pass.toOrig(w.bbox));
+  return out;
+}
+
+function redact(canvas, boxes, protect) {
   if (!boxes.length) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.fillStyle = '#26262e';
-  for (const b of boxes) {
-    const h = (b.y1 - b.y0) * H;
-    ctx.fillRect(b.x0 * W - h * 0.3, b.y0 * H - h * 0.25, (b.x1 - b.x0) * W + h * 0.6, h * 1.5);
+  for (const b of prepareRedaction(boxes, protect, W / H)) {
+    const x = b.x0 * W, y = b.y0 * H, w = (b.x1 - b.x0) * W, h = (b.y1 - b.y0) * H, r = Math.min(h / 3, 8);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
+    ctx.fill();
   }
 }
 
@@ -240,7 +241,7 @@ export async function readReceipt(file, onStatus, profile = null) {
     for (const p of [...passes].sort((a, b) => b.weight - a.weight)) { box = findTimeBox(p.data, time, p.toOrig); if (box) break; }
   }
   // Privacidade: a foto só é guardada com CPF, nome, empresa e endereço cobertos por tarja.
-  redact(canvas, passes.flatMap((p) => sensitiveBoxes(p, personalWords(receipt), time)));
+  redact(canvas, passes.flatMap((p) => sensitiveBoxes(p, personalWords(receipt))), passes.flatMap(protectedBoxes));
   const photoBlob = await canvasToBlob(canvas);
   return { receipt, box: box ? box.map((v) => v.toFixed(4)).join(',') : null, photoBlob, lines, uncertain };
 }

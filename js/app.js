@@ -153,9 +153,9 @@ function homeView() {
   return `<div class="stack">
     ${isIOS && !standalone ? `<div class="card tight row" style="background:var(--primary-soft)">${icon('share', 'color:var(--primary)')}
       <div class="small grow">Para instalar: toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>.</div></div>` : ''}
-    <div class="row"><div class="grow"><div class="muted">${greeting(now)}${name ? `, ${esc(name)}` : ''}</div>
+    <div class="row"><div class="grow tap" data-act="editName"><div class="muted">${greeting(now)}${name ? `, ${esc(name)}` : ''}</div>
       <div class="h2">${longLabel(t)}</div></div>
-      <button class="avatar" data-act="tab" data-tab="ajustes">${esc(initials(data.settings.name || 'Ponto Foto'))}</button></div>
+      <button class="avatar" data-act="editName" aria-label="Editar nome">${esc(initials(data.settings.name || 'Ponto Foto'))}</button></div>
     ${(() => { const a = L.upcomingAppointments(data.appointments, now, 1)[0]; return a ? `<div class="card tight row tap" data-act="appt" data-id="${a.id}">${icon('calendar', 'color:var(--primary);flex:none')}<div class="grow"><b>${a.date === t ? 'Hoje' : 'Amanhã'}: ${esc(a.title || L.APPT_KINDS[a.kind])}</b><div class="small muted">${esc(L.describeAppointment(a))}</div></div></div>` : ''; })()}
 
     ${missing ? `<div class="card tight row tap" data-act="day" data-date="${missing.date}" style="background:color-mix(in srgb, var(--negative) 14%, var(--surface))">${icon('info', 'color:var(--negative);flex:none')}
@@ -415,8 +415,8 @@ function settingsView() {
     <div class="h1">Ajustes</div>
     <div class="card"><div class="row"><div class="avatar" style="width:52px;height:52px">${esc(initials(st.name || '?'))}</div>
       <div><div class="h3">Perfil</div><div class="small muted">Só o primeiro nome, opcional.</div></div></div>
-      <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="pf-name" value="${esc(st.name)}" style="font-size:16px"></label>
-      <div style="text-align:right"><button class="link" data-act="saveProfile">Salvar</button></div></div>
+      <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="pf-name" maxlength="30" autocapitalize="words" enterkeyhint="done" value="${esc(st.name)}" style="font-size:16px"></label>
+      <div style="text-align:right"><button class="link" data-act="saveProfile">Salvar nome</button></div></div>
     <div class="card"><div class="h3">Como você trabalha</div><div class="small muted">Escolha o que aparece no app.</div>
       <div class="chips" style="margin-top:8px">${[['CLT', 'Carteira assinada (ponto)'], ['APPS', 'Apps de corrida/entrega'], ['AMBOS', 'Os dois']].map(([k, l]) => `<button class="chip ${(st.workMode || 'CLT') === k ? 'on' : ''}" data-act="workMode" data-v="${k}">${l}</button>`).join('')}</div></div>
     <div class="card"><div class="h3">Escala do trabalho</div><div class="small muted">Recebeu um link de escala do patrão? Abra o link no celular e o app ajusta jornada, folgas e lembretes. Organiza uma equipe? <a class="link" href="escalas.html">Monte a escala aqui</a>.</div></div>
@@ -568,6 +568,10 @@ function overlayView() {
         <button class="btn block" style="margin-top:12px;height:54px" data-act="importSchedule">Importar escala aqui</button>
         <button class="btn outline block" style="margin-top:8px" data-act="close">Agora não</button>`);
     }
+    case 'name':
+      return sheet(`<div class="h2">Seu nome</div><div class="small muted">Só o primeiro nome, para a saudação. Deixe vazio para não usar nome.</div>
+        <label class="field" style="margin-top:12px"><span>Primeiro nome</span><input id="nm-name" maxlength="30" autocapitalize="words" enterkeyhint="done" value="${esc(data.settings.name || '')}" style="font-size:16px"></label>
+        <div class="grid2" style="margin-top:12px"><button class="btn outline" data-act="close">Cancelar</button><button class="btn" data-act="saveName">Salvar</button></div>`);
     case 'mark': {
       const cur = data.marks[o.date]?.type || '';
       const opts = [['', 'Dia normal', 'Jornada normal do dia'], ['FOLGA', 'Folga', 'Sem jornada; trabalho vira crédito'], ['FERIAS', 'Férias', 'Sem jornada'],
@@ -1280,6 +1284,8 @@ const actions = {
   remLead: (d) => { remSettings().punchLead = Number(d.v); save(); renderApp(); },
   remHolDays: (d) => { remSettings().holidayDaysBefore = Number(d.v); save(); renderApp(); },
   exportIcs: () => shareOrDownload(new Blob([buildIcs()], { type: 'text/calendar' }), 'pontofoto-lembretes.ics', 'Lembretes Ponto Foto'),
+  editName: () => { openOverlay({ kind: 'name' }); setTimeout(() => document.getElementById('nm-name')?.focus(), 50); },
+  saveName: () => { const n = L.firstName(document.getElementById('nm-name').value); data.settings.name = n; save(); closeOverlay(); renderApp(); toast(n ? 'Nome salvo' : 'Nome removido'); },
   saveProfile: () => { data.settings.name = L.firstName(document.getElementById('pf-name').value); save(); renderApp(); toast('Salvo'); },
   clearPhotos: async () => {
     if (!window.confirm('Apagar as fotos dos comprovantes? Os horários continuam.')) return;
@@ -1342,6 +1348,11 @@ async function fillCities() {
 }
 document.addEventListener('focusin', (ev) => { if (ev.target.id === 'loc-city') fillCities(); });
 document.addEventListener('change', (ev) => { if (ev.target.id === 'loc-uf') fillCities(); });
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter') return;
+  if (ev.target.id === 'nm-name') { ev.preventDefault(); actions.saveName(); }
+  if (ev.target.id === 'pf-name') { ev.preventDefault(); actions.saveProfile(); }
+});
 
 document.addEventListener('input', (ev) => { if (ev.target.dataset?.input === 'goalPreview') goalPreview(); });
 

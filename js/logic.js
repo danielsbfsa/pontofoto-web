@@ -843,3 +843,31 @@ export function parseEarnings(raw) {
   const km = (m = /(\d{1,4}(?:,\d{1,2})?)\s*KM\b/.exec(t)) ? Number(m[1].replace(',', '.')) : null;
   return { platform, earnings, tips: tip ? tip.v : null, trips, online, km };
 }
+
+// ---------- Tarja (mesma regra do Android: ocr/Redaction.kt) ----------
+const R_DATE = /\d{1,2}\s*[/-]\s*\d{1,2}\s*[/-]\s*\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4}/;
+const R_TIME = /\d{1,2}\s*[:hH]\s*[0-5O]\d/;
+const R_LABEL = /^(DATA|HORA|H[O0]|RA|DT|HR)\W*$/;
+
+/** Palavra da data/hora do ponto: fica sempre visível (CPF/PIS nunca entram aqui). */
+export function isProtectedWord(text) {
+  const u = String(text || '').toUpperCase().trim();
+  if ((u.match(/\d/g) || []).length >= 9) return false;
+  return R_DATE.test(u) || R_TIME.test(u) || u.includes('DATA') || u.includes('HORA') || R_LABEL.test(u);
+}
+
+/** Folga pequena e recorte em volta das áreas protegidas. Caixas {x0,y0,x1,y1} em frações; aspect = W/H. */
+export function prepareRedaction(boxes, protect, aspect) {
+  const h = (b) => b.y1 - b.y0, w = (b) => b.x1 - b.x0, cy = (b) => (b.y0 + b.y1) / 2;
+  let out = boxes.map((b) => { const py = h(b) * 0.10, px = h(b) * 0.20 / aspect; return { x0: b.x0 - px, y0: b.y0 - py, x1: b.x1 + px, y1: b.y1 + py }; });
+  for (const p of protect) {
+    const gap = h(p) * 0.15 / aspect;
+    out = out.flatMap((r) => {
+      const ox = Math.min(r.x1, p.x1) - Math.max(r.x0, p.x0), oy = Math.min(r.y1, p.y1) - Math.max(r.y0, p.y0);
+      if (ox <= 0 || oy <= 0) return [r];
+      if (oy < Math.min(h(r), h(p)) * 0.45) return [cy(p) > cy(r) ? { ...r, y1: p.y0 } : { ...r, y0: p.y1 }];
+      return [{ ...r, x1: p.x0 - gap }, { ...r, x0: p.x1 + gap }].filter((b) => w(b) > 0);
+    });
+  }
+  return out.filter((b) => w(b) > 0.002 && h(b) > 0.002);
+}
