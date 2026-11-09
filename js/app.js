@@ -1284,7 +1284,7 @@ const actions = {
   remLead: (d) => { remSettings().punchLead = Number(d.v); save(); renderApp(); },
   remHolDays: (d) => { remSettings().holidayDaysBefore = Number(d.v); save(); renderApp(); },
   exportIcs: () => shareOrDownload(new Blob([buildIcs()], { type: 'text/calendar' }), 'pontofoto-lembretes.ics', 'Lembretes Ponto Foto'),
-  editName: () => { openOverlay({ kind: 'name' }); setTimeout(() => document.getElementById('nm-name')?.focus(), 50); },
+  editName: () => { openOverlay({ kind: 'name' }); const i = document.getElementById('nm-name'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } },
   saveName: () => { const n = L.firstName(document.getElementById('nm-name').value); data.settings.name = n; save(); closeOverlay(); renderApp(); toast(n ? 'Nome salvo' : 'Nome removido'); },
   saveProfile: () => { data.settings.name = L.firstName(document.getElementById('pf-name').value); save(); renderApp(); toast('Salvo'); },
   clearPhotos: async () => {
